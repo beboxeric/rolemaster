@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh" data-theme="powder">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<template id="__bundler_thumbnail">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <rect width="200" height="200" fill="#6FA577"/>
+  <rect x="60" y="60" width="80" height="80" rx="14" fill="#FFFFFF"/>
+  <text x="100" y="116" font-family="system-ui,sans-serif" font-size="42" font-weight="700" fill="#6FA577" text-anchor="middle">RM</text>
+</svg>
+</template>
+<title>RoleMaster — Prototype</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link id="font-link" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&family=Source+Serif+4:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="styles.css?v=7" />
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" src="i18n.jsx"></script>
+<script type="text/babel" src="data.jsx"></script>
+
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+<script type="text/babel" src="chrome.jsx"></script>
+<script type="text/babel" src="screens-onboard.jsx"></script>
+<script type="text/babel" src="screens-other.jsx"></script>
+<script type="text/babel" src="screens-sales.jsx"></script>
+<script type="text/babel" src="screen-form.jsx"></script>
+<script type="text/babel" src="screen-workbench.jsx"></script>
+
+<script type="text/babel" data-presets="env,react">
+const { useState, useEffect } = React;
+
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "supplierColor": "#6FA577",
+  "curatorColor": "#8E7AB5",
+  "salesColor": "#6E9CC9",
+  "density": "normal",
+  "warmth": "neutral",
+  "roundness": "soft",
+  "font": "inter",
+  "showStepper": true,
+  "showScreenPicker": true,
+  "showCopilotByDefault": true
+}/*EDITMODE-END*/;
+
+// Lighten a hex color toward white by `amt` (0..1)
+function tint(hex, amt) {
+  const h = hex.replace('#','');
+  const r = parseInt(h.slice(0,2), 16);
+  const g = parseInt(h.slice(2,4), 16);
+  const b = parseInt(h.slice(4,6), 16);
+  const m = (c) => Math.round(c + (255 - c) * amt);
+  const x = (n) => n.toString(16).padStart(2, '0');
+  return '#' + x(m(r)) + x(m(g)) + x(m(b));
+}
+function shade(hex, amt) {
+  const h = hex.replace('#','');
+  const r = parseInt(h.slice(0,2), 16);
+  const g = parseInt(h.slice(2,4), 16);
+  const b = parseInt(h.slice(4,6), 16);
+  const m = (c) => Math.round(c * (1 - amt));
+  const x = (n) => n.toString(16).padStart(2, '0');
+  return '#' + x(m(r)) + x(m(g)) + x(m(b));
+}
+
+function App() {
+  const [screen, setScreen] = useState("register");
+  const [lang, setLang] = useState("zh");
+  const [tweaks, setTweak] = useTweaks(TWEAK_DEFAULTS);
+  const [selectedRolepack, setSelectedRolepack] = useState("RP-AML");
+  const [showGenOverlay, setShowGenOverlay] = useState(false);
+
+  // Apply platform colors + tweak knobs to <html>
+  useEffect(() => {
+    const root = document.documentElement;
+    const sup = tweaks.supplierColor || "#6FA577";
+    const cur = tweaks.curatorColor || "#8E7AB5";
+    const sal = tweaks.salesColor || "#6E9CC9";
+    root.style.setProperty('--plat-supplier', sup);
+    root.style.setProperty('--plat-supplier-2', shade(sup, 0.18));
+    root.style.setProperty('--plat-supplier-tint', tint(sup, 0.92));
+    root.style.setProperty('--plat-curator', cur);
+    root.style.setProperty('--plat-curator-2', shade(cur, 0.18));
+    root.style.setProperty('--plat-curator-tint', tint(cur, 0.92));
+    root.style.setProperty('--plat-sales', sal);
+    root.style.setProperty('--plat-sales-2', shade(sal, 0.18));
+    root.style.setProperty('--plat-sales-tint', tint(sal, 0.92));
+
+    // Body classes for density / warmth / roundness / stepper
+    document.body.className = [
+      'density-' + (tweaks.density || 'normal'),
+      'warm-' + (tweaks.warmth || 'neutral'),
+      'round-' + (tweaks.roundness || 'soft'),
+      tweaks.showStepper ? '' : 'no-stepper',
+    ].filter(Boolean).join(' ');
+
+    const fonts = {
+      inter: '"Inter", "Noto Sans SC", system-ui, sans-serif',
+      ibm:   '"IBM Plex Sans", "Noto Sans SC", system-ui, sans-serif',
+      serif: '"Source Serif 4", "Noto Sans SC", Georgia, serif',
+      system:'system-ui, -apple-system, "Noto Sans SC", sans-serif',
+    };
+    root.style.setProperty('--font-sans', fonts[tweaks.font] || fonts.inter);
+  }, [tweaks]);
+
+  useEffect(() => {
+    document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
+  }, [lang]);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+      if (e.key === "0") { setScreen("saleslogin"); return; }
+      const idx = parseInt(e.key, 10);
+      if (idx >= 1 && idx <= 9) {
+        const s = window.SCREENS[idx - 1];
+        if (s) setScreen(s.id);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const screenIdx = window.SCREENS.findIndex(s => s.id === screen);
+  const next = () => {
+    const n = window.SCREENS[screenIdx + 1];
+    if (n) setScreen(n.id);
+  };
+  const back = () => {
+    const p = window.SCREENS[screenIdx - 1];
+    if (p) setScreen(p.id);
+  };
+
+  const handlePublish = () => setShowGenOverlay(true);
+  const onGenDone = () => {
+    setShowGenOverlay(false);
+    setSelectedRolepack("RP-AML");
+    setScreen("rolepack");
+  };
+  const openRolepack = (id) => {
+    setSelectedRolepack(id);
+    setScreen("rolepack");
+  };
+
+  // Determine which platform we're on
+  const platform =
+    ["register","onboard","multi","form","confirm","thanks"].includes(screen) ? "supplier" :
+    ["queue","workbench","publish"].includes(screen) ? "curator" :
+    ["saleslogin","catalog","rolepack"].includes(screen) ? "sales" : null;
+
+  const steps = platform ? window.getPlatformSteps(platform, lang) : [];
+
+  let content;
+  switch (screen) {
+    case "register":   content = <ScreenRegister lang={lang} setLang={setLang} goNext={next} />; break;
+    case "onboard":    content = <ScreenOnboard lang={lang} setLang={setLang} goNext={next} />; break;
+    case "multi":      content = <ScreenMulti lang={lang} setLang={setLang} goNext={next} />; break;
+    case "form":       content = <ScreenForm lang={lang} setLang={setLang} goNext={next} />; break;
+    case "confirm":    content = <ScreenConfirm lang={lang} setLang={setLang} goNext={next} goBack={back} />; break;
+    case "thanks":     content = <ScreenThanks lang={lang} setLang={setLang} goNext={() => setScreen("queue")} />; break;
+    case "queue":      content = <ScreenQueue lang={lang} setLang={setLang} goNext={() => setScreen("workbench")} />; break;
+    case "workbench":  content = <ScreenWorkbench lang={lang} setLang={setLang} goNext={next} goBack={() => setScreen("queue")} />; break;
+    case "publish":    content = <ScreenPublish lang={lang} setLang={setLang} goBack={() => setScreen("queue")} onPublish={handlePublish} />; break;
+    case "saleslogin": content = <ScreenSalesLogin lang={lang} setLang={setLang} goNext={() => setScreen("catalog")} />; break;
+    case "catalog":    content = <ScreenCatalog lang={lang} setLang={setLang} goBack={() => setScreen("saleslogin")} openRolepack={openRolepack} />; break;
+    case "rolepack":   content = <ScreenRolepackDetail lang={lang} setLang={setLang} rolepackId={selectedRolepack} goBack={() => setScreen("catalog")} />; break;
+    default:           content = <div>Unknown screen</div>;
+  }
+
+  return (
+    <>
+      <div data-screen-label={screen} className={"platform-" + (platform || "supplier")}>
+        {tweaks.showStepper && platform && platform !== "sales" && (
+          <ProcessStepper steps={steps} currentScreen={screen} onJump={setScreen} />
+        )}
+        {content}
+      </div>
+      {showGenOverlay && (
+        <AssetGenerationOverlay
+          lang={lang}
+          rolepackName={lang === "zh" ? "AML 监控分析师助手" : "AML Monitoring Analyst Assistant"}
+          onDone={onGenDone}
+        />
+      )}
+      {tweaks.showScreenPicker && (
+        <ScreenPicker screen={screen} setScreen={setScreen} lang={lang} />
+      )}
+      <TweaksPanel title="Tweaks">
+        <TweakSection title={lang === "zh" ? "平台配色" : "Platform colors"}>
+          <TweakColor label={lang === "zh" ? "供应商" : "Supplier"} value={tweaks.supplierColor} onChange={(v) => setTweak("supplierColor", v)} />
+          <TweakColor label={lang === "zh" ? "策展人" : "Curator"} value={tweaks.curatorColor} onChange={(v) => setTweak("curatorColor", v)} />
+          <TweakColor label={lang === "zh" ? "销售" : "Sales"} value={tweaks.salesColor} onChange={(v) => setTweak("salesColor", v)} />
+        </TweakSection>
+        <TweakSection title={lang === "zh" ? "外观" : "Appearance"}>
+          <TweakRadio label={lang === "zh" ? "密度" : "Density"}
+            value={tweaks.density}
+            onChange={(v) => setTweak("density", v)}
+            options={[
+              { value: "compact", label: lang === "zh" ? "紧凑" : "Compact" },
+              { value: "normal", label: lang === "zh" ? "标准" : "Normal" },
+              { value: "comfortable", label: lang === "zh" ? "宽松" : "Comfy" },
+            ]} />
+          <TweakRadio label={lang === "zh" ? "圆角" : "Roundness"}
+            value={tweaks.roundness}
+            onChange={(v) => setTweak("roundness", v)}
+            options={[
+              { value: "sharp", label: lang === "zh" ? "锐利" : "Sharp" },
+              { value: "soft", label: lang === "zh" ? "柔和" : "Soft" },
+              { value: "pill", label: lang === "zh" ? "胶囊" : "Pill" },
+            ]} />
+          <TweakRadio label={lang === "zh" ? "色温" : "Warmth"}
+            value={tweaks.warmth}
+            onChange={(v) => setTweak("warmth", v)}
+            options={[
+              { value: "cool", label: lang === "zh" ? "冷" : "Cool" },
+              { value: "neutral", label: lang === "zh" ? "中" : "Neutral" },
+              { value: "warm", label: lang === "zh" ? "暖" : "Warm" },
+            ]} />
+          <TweakSelect label={lang === "zh" ? "字体" : "Font"}
+            value={tweaks.font}
+            onChange={(v) => setTweak("font", v)}
+            options={[
+              { value: "inter", label: "Inter" },
+              { value: "ibm", label: "IBM Plex Sans" },
+              { value: "serif", label: "Source Serif 4" },
+              { value: "system", label: lang === "zh" ? "系统字体" : "System UI" },
+            ]} />
+        </TweakSection>
+        <TweakSection title={lang === "zh" ? "演示" : "Demo"}>
+          <TweakToggle label={lang === "zh" ? "显示流程步骤" : "Show stepper"}
+            value={tweaks.showStepper}
+            onChange={(v) => setTweak("showStepper", v)} />
+          <TweakToggle label={lang === "zh" ? "底部屏幕选择器" : "Show screen picker"}
+            value={tweaks.showScreenPicker}
+            onChange={(v) => setTweak("showScreenPicker", v)} />
+          <TweakRadio label={lang === "zh" ? "默认语言" : "Default language"}
+            value={lang}
+            onChange={setLang}
+            options={[
+              { value: "zh", label: "中文" },
+              { value: "en", label: "EN" },
+            ]} />
+        </TweakSection>
+      </TweaksPanel>
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

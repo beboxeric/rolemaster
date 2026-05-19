@@ -1,0 +1,22 @@
+name = "rolemaster"
+pages_build_output_dir = "dist"
+compatibility_date = "2024-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "rolemaster-db"
+database_id = "aeb08d61-8d79-43e7-8d1c-9aed581e1c62"
+
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "rolemaster-files"
+
+# Secrets to set via `wrangler pages secret put` (NOT in this file):
+#   JWT_SECRET           — random string, used to sign session JWTs (required)
+#   QWEN_API_KEY         — DashScope API key. Required for every AI surface
+#                          (extract-capabilities, match-roles, role-prefill,
+#                          rewrite, summary, copilot). DASHSCOPE_API_KEY also
+#                          works as an alias.
+#   QWEN_MODEL           — optional override, e.g. 'qwen-max' or 'qwen-turbo' (default: qwen-plus)
+#   QWEN_BASE_URL        — optional override (default: dashscope-intl; use https://dashscope.aliyuncs.com/compatible-mode/v1 for China region)

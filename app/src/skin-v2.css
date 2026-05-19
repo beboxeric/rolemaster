@@ -1,0 +1,535 @@
+/* RoleMaster v2 skin — additive overrides for v2/source/styles.css
+
+   GOAL: Stop using cards as the default container. Establish three container
+   roles — Page surface, Input surface, Status surface — so hierarchy becomes
+   readable. Promote the mono RP-/RC- labels into a real type element. Tighten
+   the type scale so screen titles feel like screen titles.
+
+   This file contains TOKENS + UTILITY CLASSES ONLY. It does not modify any
+   existing class. To adopt, append it after styles.css and apply the new
+   classes via the mechanical patches in INTEGRATION.md.
+
+   Drop-in: <link rel="stylesheet" href="skin-v2.css"> AFTER styles.css. */
+
+/* ──────────────────────────────────────────────────────────────────
+   1 · TOKENS
+   ────────────────────────────────────────────────────────────────── */
+:root {
+  /* Refined platform tints — kill the mesh, use a flat surface that
+     doesn't compete with card content. The mesh stays in styles.css for
+     anyone who opts back into it via .platform-supplier.hero-bg, but by
+     default v2 screens land on a calm tint. */
+  --v2-surface-supplier:  #F4FAF6;   /* page bg — very pale emerald */
+  --v2-surface-curator:   #F6F2FD;   /* page bg — very pale violet  */
+  --v2-surface-sales:     #F1F6FE;   /* page bg — very pale azure   */
+
+  /* Section dividers — hairlines that read as structural, not decorative */
+  --v2-rule:              rgba(20, 24, 42, 0.08);
+  --v2-rule-strong:       rgba(20, 24, 42, 0.14);
+
+  /* Type scale (display → meta).
+     Display is container-aware: locks to 30px at ≥720px container width and
+     scales down toward 22px at narrow widths (preview frames, comparison
+     pairs, embedded panels). Falls back to 26px in browsers without
+     container queries. */
+  --v2-fs-display:  26px;   /* H1 — screen title (fallback) */
+  --v2-fs-h2:       19px;   /* section head */
+  --v2-fs-h3:       15px;   /* card head */
+  --v2-fs-body:     14px;
+  --v2-fs-meta:     12px;
+  --v2-fs-micro:    10.5px; /* mono labels, eyebrow caps */
+
+  --v2-lh-tight:    1.18;
+  --v2-lh-snug:     1.35;
+  --v2-lh-body:     1.55;
+
+  /* Spacing rhythm */
+  --v2-stack-xs:    6px;
+  --v2-stack-sm:    10px;
+  --v2-stack-md:    18px;
+  --v2-stack-lg:    28px;
+  --v2-stack-xl:    44px;
+
+  /* Elevation */
+  --v2-shadow-input:  0 1px 0 rgba(20, 24, 42, 0.04);
+  --v2-shadow-raised: 0 1px 2px rgba(20, 24, 42, 0.04), 0 4px 16px rgba(20, 24, 42, 0.06);
+  --v2-shadow-modal:  0 10px 40px rgba(15, 30, 60, 0.18);
+}
+
+/* The v2 screen wrapper is transparent — the gradient lives on the
+   persistent .app-root parent, so it doesn't repaint when routes change. */
+.v2.platform-supplier,
+.v2.platform-curator,
+.v2.platform-sales {
+  background: transparent;
+}
+
+/* ──────────────────────────────────────────────────────────────────
+   2 · TYPE — display, headings, eyebrow, code-label
+   ────────────────────────────────────────────────────────────────── */
+.v2-display {
+  font-family: var(--font-display);
+  font-size: var(--v2-fs-display);
+  line-height: var(--v2-lh-tight);
+  letter-spacing: -0.022em;
+  font-weight: 700;
+  color: var(--navy-ink);
+  margin: 0 0 var(--v2-stack-xs);
+}
+.v2-h2 {
+  font-family: var(--font-display);
+  font-size: var(--v2-fs-h2);
+  line-height: var(--v2-lh-snug);
+  letter-spacing: -0.014em;
+  font-weight: 700;
+  color: var(--navy-ink);
+  margin: 0 0 var(--v2-stack-sm);
+}
+.v2-h3 {
+  font-size: var(--v2-fs-h3);
+  line-height: var(--v2-lh-snug);
+  font-weight: 600;
+  color: var(--navy-ink);
+  margin: 0 0 var(--v2-stack-sm);
+}
+.v2-lede {
+  font-size: var(--v2-fs-body);
+  line-height: var(--v2-lh-body);
+  color: var(--ink-2);
+  margin: 0 0 var(--v2-stack-md);
+  max-width: 64ch;
+  text-wrap: pretty;
+}
+.v2-meta {
+  font-size: var(--v2-fs-meta);
+  line-height: var(--v2-lh-snug);
+  color: var(--ink-3);
+}
+
+/* Eyebrow — ALL-CAPS section label above an h2 */
+.v2-eyebrow {
+  display: inline-block;
+  font-size: var(--v2-fs-micro);
+  font-weight: 700;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 0 0 6px;
+}
+
+/* Code label — the mono RP-XXXX / RC-XXXX badge, formalized.
+   Was 11px / varying letter-spacing across files; now consistent. */
+.v2-code-label {
+  font-family: var(--font-mono);
+  font-size: var(--v2-fs-micro);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+  color: var(--primary, var(--plat-supplier));
+}
+.v2-code-label--quiet { color: var(--ink-3); }
+
+/* ──────────────────────────────────────────────────────────────────
+   3 · CONTAINERS — three roles, not one
+   ──────────────────────────────────────────────────────────────────
+
+   v2-page         a single editorial column on the platform tint.
+                   No card wrapper. Use this as the screen body.
+
+   v2-section      a span of related rows within v2-page, separated
+                   from siblings by a hairline rule (top/bottom).
+                   No background, no border, no radius.
+
+   v2-input-card   white, soft 1px border, 10px radius.
+                   ONLY use for: form blocks, the Copilot pane, modals,
+                   things the user will physically interact with.
+
+   v2-status       tinted pill or inline panel. Carries semantic color
+                   (--st-fill / --st-empty / --cop-bg). Used to label
+                   state, not to wrap a region. */
+
+.v2-page {
+  flex: 1;
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: var(--v2-stack-xl) 24px 96px;
+  container-type: inline-size;
+}
+.v2-page--wide   { max-width: 960px; }
+.v2-page--narrow { max-width: 560px; }
+
+/* Container query — H1 grows up to 30px when there's room.
+   At ≤520px container it stays at the 26px fallback. */
+@container (min-width: 560px) {
+  .v2-display { font-size: 28px; }
+}
+@container (min-width: 720px) {
+  .v2-display { font-size: 30px; }
+}
+
+.v2-section {
+  padding: var(--v2-stack-md) 0;
+  border-top: 1px solid var(--v2-rule);
+}
+.v2-section:first-of-type { border-top: 0; padding-top: 0; }
+.v2-section + .v2-section { padding-top: var(--v2-stack-md); }
+.v2-section__head {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  gap: 12px;
+  margin: 0 0 var(--v2-stack-sm);
+}
+.v2-section__head .v2-h2 { margin: 0; min-width: 0; }
+.v2-section__head .v2-meta { white-space: nowrap; }
+
+/* Row — a single item in a section. Replaces the white-card-with-stripe.
+   Hairline divider between rows; the platform-color cue moves to the
+   leading code-label only. */
+.v2-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--v2-rule);
+}
+.v2-row:last-child { border-bottom: 0; }
+.v2-row__lead {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 72px;
+  gap: 3px;
+}
+/* Secondary line under a code label, e.g. "Compliance" under "RP-AML" */
+.v2-row__sublabel {
+  font-size: var(--v2-fs-meta);
+  color: var(--ink-3);
+  line-height: 1.3;
+}
+.v2-row__body { flex: 1; min-width: 0; }
+.v2-row__title {
+  font-size: var(--v2-fs-body);
+  font-weight: 600;
+  color: var(--navy-ink);
+  line-height: 1.35;
+  margin: 0 0 4px;
+}
+.v2-row__meta { font-size: var(--v2-fs-meta); color: var(--ink-3); }
+.v2-row__action { flex-shrink: 0; align-self: center; }
+
+/* Input card — the only thing that gets the white-pane treatment */
+.v2-input-card {
+  background: white;
+  border: 1px solid var(--v2-rule);
+  border-radius: 10px;
+  padding: 18px;
+  box-shadow: var(--v2-shadow-input);
+}
+.v2-input-card + .v2-input-card { margin-top: var(--v2-stack-sm); }
+
+/* Modal / Copilot pane — slightly more lift, no platform stripe */
+.v2-pane {
+  background: white;
+  border: 1px solid var(--v2-rule);
+  border-radius: 12px;
+  box-shadow: var(--v2-shadow-raised);
+}
+
+/* ──────────────────────────────────────────────────────────────────
+   4 · STATUS — pills + inline panels, not full-bleed banners
+   ────────────────────────────────────────────────────────────────── */
+
+/* Inline pill — sits next to the screen title to label state */
+.v2-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: var(--v2-fs-meta);
+  font-weight: 600;
+  letter-spacing: 0.005em;
+  white-space: nowrap;
+  vertical-align: 2px;
+}
+.v2-status-pill--ai     { background: var(--st-aireview-bg); color: var(--st-aireview-ink); border: 1px solid var(--st-aireview-border); }
+.v2-status-pill--review { background: var(--cop-bg); color: var(--cop-ink); border: 1px solid #D8C9EC; }
+.v2-status-pill--ok     { background: var(--st-fill-bg); color: var(--st-fill-ink); border: 1px solid var(--st-fill-border); }
+.v2-status-pill--needs  { background: var(--st-empty-bg); color: var(--st-empty-ink); border: 1px solid var(--st-empty-border); }
+.v2-status-pill--weak   { background: var(--st-weak-bg); color: var(--st-weak-ink); border: 1px solid var(--st-weak-border); }
+
+/* Title row — H1 with optional inline pill.
+   Uses inline-flow so the pill sits next to the H1 when there's room
+   and naturally sits below it when there isn't, with no flexbox edge
+   cases. The H1 is block-level; the pill is inline and rides the
+   baseline of the H1's last line. */
+.v2-title-row {
+  margin-bottom: var(--v2-stack-xs);
+}
+.v2-title-row .v2-display {
+  display: inline;
+  margin-right: 10px;
+}
+.v2-title-row .v2-status-pill {
+  position: relative;
+  top: -4px;
+}
+
+/* Inline status panel — used ONLY when there's an action to take.
+   For "submitted, in review" use v2-status-pill in the title row instead. */
+.v2-status-panel {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid;
+  margin: 0 0 var(--v2-stack-md);
+  font-size: var(--v2-fs-body);
+  line-height: 1.5;
+}
+.v2-status-panel--info   { background: var(--cop-bg); border-color: #D8C9EC; color: var(--cop-ink); }
+.v2-status-panel--ok     { background: var(--st-fill-bg); border-color: var(--st-fill-border); color: var(--st-fill-ink); }
+.v2-status-panel--needs  { background: var(--st-empty-bg); border-color: var(--st-empty-border); color: var(--st-empty-ink); }
+.v2-status-panel__icon {
+  flex-shrink: 0;
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  background: currentColor;
+  color: white;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700;
+  margin-top: 1px;
+}
+.v2-status-panel__icon::before { color: white; }
+.v2-status-panel__body { flex: 1; min-width: 0; }
+.v2-status-panel__body strong { display: block; font-weight: 700; margin-bottom: 2px; }
+
+/* ──────────────────────────────────────────────────────────────────
+   5 · BUTTON refinements — same primary, calmer secondary, real link
+   ────────────────────────────────────────────────────────────────── */
+.v2-btn-link {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-size: var(--v2-fs-body);
+  font-weight: 600;
+  color: var(--primary, var(--plat-supplier));
+  cursor: pointer;
+  text-decoration: none;
+}
+.v2-btn-link:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+/* Quiet secondary — borderless text button. Reads as an action when paired
+   with a row, never competes with .btn-primary. Hover gets a soft tinted
+   pill so it still feels clickable. */
+.v2-btn-quiet {
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: var(--v2-fs-body);
+  font-weight: 600;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+.v2-btn-quiet:hover {
+  color: var(--primary, var(--plat-supplier));
+  background: color-mix(in srgb, var(--primary, var(--plat-supplier)) 8%, transparent);
+}
+.v2-btn-quiet:disabled {
+  color: var(--ink-3);
+  background: transparent;
+  cursor: not-allowed;
+}
+
+/* ──────────────────────────────────────────────────────────────────
+   6 · CHIP refinements — tighter, no all-fill saturation
+   ────────────────────────────────────────────────────────────────── */
+.v2-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: white;
+  color: var(--ink-2);
+  border: 1px solid var(--v2-rule);
+  cursor: pointer;
+  font-weight: 500;
+  line-height: 1.4;
+  transition: border-color 0.12s, color 0.12s, background 0.12s;
+}
+.v2-chip:hover {
+  border-color: color-mix(in srgb, var(--primary, var(--plat-supplier)) 60%, transparent);
+}
+/* Selected = solid platform color, white text. Unmistakable from inactive. */
+.v2-chip--active {
+  background: var(--primary, var(--plat-supplier));
+  border-color: var(--primary, var(--plat-supplier));
+  color: white;
+  font-weight: 600;
+}
+.v2-chip--active:hover { border-color: var(--primary, var(--plat-supplier)); }
+.v2-chip__code {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--primary, var(--plat-supplier));
+  opacity: 0.85;
+}
+.v2-chip--active .v2-chip__code {
+  color: white;
+  opacity: 0.85;
+}
+
+/* ──────────────────────────────────────────────────────────────────
+   7 · DIVIDERS — for use inside v2-input-card
+   ────────────────────────────────────────────────────────────────── */
+.v2-hr {
+  height: 1px;
+  background: var(--v2-rule);
+  border: 0;
+  margin: var(--v2-stack-md) 0;
+}
+.v2-hr--tight { margin: var(--v2-stack-sm) 0; }
+
+/* ──────────────────────────────────────────────────────────────────
+   8 · UTILITIES — small, useful, used in the demo
+   ────────────────────────────────────────────────────────────────── */
+.v2-stack > * + * { margin-top: var(--v2-stack-sm); }
+.v2-stack-md > * + * { margin-top: var(--v2-stack-md); }
+.v2-cluster {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.v2-cluster--end { justify-content: flex-end; }
+.v2-grow { flex: 1; min-width: 0; }
+
+/* ──────────────────────────────────────────────────────────────────
+   9 · VALIDATION — required-field error states
+   ────────────────────────────────────────────────────────────────── */
+.text-input.error,
+.text-input.error:focus,
+.text-input.error:hover {
+  border-color: #DC2A4A;
+  box-shadow: 0 0 0 3px rgba(220,42,74,0.12);
+  background: #FFF7F8;
+}
+.field-label.error { color: #DC2A4A; }
+.field-error {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: #DC2A4A;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 500;
+}
+.v2-banner-error {
+  background: #FFF1F3;
+  border: 1px solid #F8C4CD;
+  color: #B81F3D;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  margin: 0 0 var(--v2-stack-sm);
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-weight: 500;
+}
+
+/* Smaller variant of v2-h2 for in-page section subheads
+   (e.g. "匹配结果" sitting alongside its meta count) */
+.v2-h2--sm {
+  font-size: var(--v2-fs-h3);
+  letter-spacing: -0.008em;
+  margin: 0;
+}
+
+/* Section head with action buttons on the right (add / re-analyze etc.) */
+.v2-section__head--actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 0 0 var(--v2-stack-sm);
+}
+.v2-section__head--actions .v2-section__head-left {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.v2-section__head--actions .v2-section__head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* ──────────────────────────────────────────────────────────────────
+   Mobile responsiveness — applies across every v2 supplier screen
+   (onboard, capabilities, roles, role-details, service-pricing,
+   review, done) plus the company-setup form.
+   Breakpoints:
+     • ≤ 720px  — phablet / large phones in landscape
+     • ≤ 480px  — most phones in portrait
+   ────────────────────────────────────────────────────────────────── */
+@media (max-width: 720px) {
+  .v2-page {
+    padding: 24px 16px 80px;
+  }
+  .v2-display { font-size: 24px; line-height: 1.18; }
+  .v2-h2 { font-size: 19px; }
+  .v2-h3 { font-size: 14.5px; }
+  .v2-lede { font-size: 14px; }
+  .v2-input-card { padding: 14px 14px 16px; border-radius: 10px; }
+
+  /* Title rows wrap rather than push pills into a tiny column. */
+  .v2-title-row { flex-wrap: wrap; gap: 8px; }
+
+  /* Section heads with action chips: stack the actions below on a new row. */
+  .v2-section__head--actions {
+    flex-wrap: wrap;
+    align-items: stretch;
+  }
+  .v2-section__head--actions .v2-section__head-actions {
+    width: 100%;
+    flex-wrap: wrap;
+    margin-top: 6px;
+  }
+
+  /* Bottom action cluster (back / continue / etc.) stacks vertically and the
+     primary CTA stretches full-width so it's easy to thumb-tap. */
+  .v2-cluster {
+    flex-direction: column-reverse;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .v2-cluster .v2-grow { display: none; }
+  .v2-cluster > button,
+  .v2-cluster > a {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
+@media (max-width: 480px) {
+  .v2-page { padding: 16px 14px 72px; }
+  .v2-display { font-size: 22px; }
+  .v2-input-card { padding: 12px 12px 14px; }
+  /* Code labels in tight grids stay legible without forcing their own row. */
+  .v2-code-label { font-size: 9.5px; }
+}
+

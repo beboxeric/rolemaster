@@ -1,0 +1,18 @@
+# UAT environment config — deploy with:
+#   bash scripts/deploy-uat.sh
+#
+# Same code, same bindings names (DB, R2) — only the underlying resource IDs differ.
+
+name = "rolemaster-uat"
+pages_build_output_dir = "dist"
+compatibility_date = "2024-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "rolemaster-db-uat"
+database_id = "REPLACE_ME_AFTER_wrangler_d1_create"
+
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "rolemaster-files-uat"

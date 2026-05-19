@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+.vite/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+.dev.vars
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+
+# Claude Code session state
+.claude/
+
+# Wrangler / Cloudflare local cache + swap leftovers
+.wrangler/
+wrangler.prod.toml.bak
+
+# Generated requirements text (regenerable from PDF)
+requirements.txt
+
+# Big standalone HTML bundle (regenerable; the loose source files in handoff/ are enough)
+handoff/rolemaster/project/RoleMaster Prototype (standalone).html
+
+# Cross-conversation handoff notes (planning artefacts, not source)
+marketing-redesign/
