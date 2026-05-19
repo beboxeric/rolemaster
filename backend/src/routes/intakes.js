@@ -10,125 +10,269 @@ import { uploadFile, deleteFile } from '../lib/storage.js';
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
-// ── Auth helper ──────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 async function getOwnIntake(intakeId, supplierId) {
-  const intake = await prisma.intake.findFirst({
-    where: { id: intakeId, supplierId },
-  });
-  return intake;
+  return prisma.intake.findFirst({ where: { id: intakeId, supplierId } });
 }
 
-// ── Intakes CRUD ─────────────────────────────────────────────────────────────
+function kindFor(filename) {
+  const ext = (filename || '').toLowerCase().split('.').pop();
+  if (ext === 'pdf') return 'pdf';
+  if (['ppt', 'pptx'].includes(ext)) return 'ppt';
+  if (['doc', 'docx', 'txt', 'md'].includes(ext)) return 'doc';
+  if (['m4a', 'mp3', 'wav', 'ogg'].includes(ext)) return 'voice';
+  return 'other';
+}
 
-// GET /api/intakes
+function serializeIntakeListItem(row, counts) {
+  return {
+    id: row.id,
+    name: row.name,
+    status: row.status,
+    free_text: row.freeText,
+    created_at: row.createdAt,
+    updated_at: row.updatedAt,
+    finalized_at: row.finalizedAt,
+    rolepack_count: counts?.[row.id]?.total ?? 0,
+    rolepack_published: counts?.[row.id]?.published ?? 0,
+  };
+}
+
+// ── GET /api/intakes ──────────────────────────────────────────────────────────
+
 router.get('/', requireSupplier, async (req, res, next) => {
   try {
-    const intakes = await prisma.intake.findMany({
+    const rows = await prisma.intake.findMany({
       where: { supplierId: req.user.supplierId },
-      orderBy: { updatedAt: 'desc' },
+      orderBy: { createdAt: 'desc' },
     });
-    res.json(intakes);
+
+    // Fetch rolepack counts in one query.
+    const ids = rows.map(r => r.id);
+    const rpRows = ids.length
+      ? await prisma.intakeRolepack.groupBy({
+          by: ['intakeId'],
+          where: { intakeId: { in: ids } },
+          _count: { id: true },
+        })
+      : [];
+    const publishedRpRows = ids.length
+      ? await prisma.intakeRolepack.groupBy({
+          by: ['intakeId'],
+          where: { intakeId: { in: ids }, status: 'published' },
+          _count: { id: true },
+        })
+      : [];
+    const counts = {};
+    for (const r of rpRows) counts[r.intakeId] = { total: r._count.id, published: 0 };
+    for (const r of publishedRpRows) {
+      if (counts[r.intakeId]) counts[r.intakeId].published = r._count.id;
+      else counts[r.intakeId] = { total: 0, published: r._count.id };
+    }
+
+    res.json({ items: rows.map(r => serializeIntakeListItem(r, counts)) });
   } catch (err) { next(err); }
 });
 
-// POST /api/intakes
+// ── POST /api/intakes ─────────────────────────────────────────────────────────
+
 router.post('/', requireSupplier, async (req, res, next) => {
   try {
-    const { productId, productName } = req.body;
-    if (!productId || !productName) return res.status(400).json({ error: 'productId and productName required' });
-
+    const name = typeof req.body.name === 'string' ? req.body.name : null;
+    const freeText = typeof req.body.free_text === 'string' ? req.body.free_text : null;
     const intake = await prisma.intake.create({
       data: {
-        id: shortId('INT-', 10),
+        id: shortId('INT-', 8),
         supplierId: req.user.supplierId,
-        productId,
-        productName,
+        name,
+        freeText,
+        status: 'draft',
       },
     });
-    res.status(201).json(intake);
+    res.status(201).json({ id: intake.id });
   } catch (err) { next(err); }
 });
 
-// GET /api/intakes/:id
+// ── GET /api/intakes/:id ──────────────────────────────────────────────────────
+
 router.get('/:id', requireAuth, async (req, res, next) => {
   try {
     const where = req.user.role === 'curator'
       ? { id: req.params.id }
       : { id: req.params.id, supplierId: req.user.supplierId };
+    const row = await prisma.intake.findFirst({ where });
+    if (!row) return res.status(404).json({ error: 'not_found' });
 
-    const intake = await prisma.intake.findFirst({
-      where,
-      include: { fields: true, capabilities: { orderBy: { position: 'asc' } }, intakeRolepacks: { orderBy: { position: 'asc' } } },
+    const [caps, rps, links, files] = await Promise.all([
+      prisma.capability.findMany({
+        where: { intakeId: row.id },
+        orderBy: { position: 'asc' },
+      }),
+      prisma.intakeRolepack.findMany({
+        where: { intakeId: row.id },
+        orderBy: { position: 'asc' },
+      }),
+      prisma.rolepackCapability.findMany({
+        where: { rolepack: { intakeId: row.id } },
+        orderBy: { position: 'asc' },
+      }),
+      prisma.intakeFile.findMany({
+        where: { intakeId: row.id },
+        orderBy: { createdAt: 'asc' },
+      }),
+    ]);
+
+    for (const rp of rps) {
+      rp.capability_ids = links.filter(l => l.rolepackId === rp.id).map(l => l.capabilityId);
+    }
+
+    // Fetch supplier + company for the curator workbench.
+    let supplier = null;
+    let company = null;
+    try {
+      const sup = await prisma.supplier.findUnique({ where: { id: row.supplierId } });
+      if (sup) supplier = { id: sup.id, name: sup.name, short_name: sup.shortName, hq: sup.hq };
+      const ci = await prisma.supplierCompanyInfo.findUnique({ where: { supplierId: row.supplierId } });
+      if (ci) {
+        company = {
+          company_name: ci.companyNameZh || ci.companyNameEn || '',
+          company_hq: ci.companyHqZh || ci.companyHqEn || '',
+          company_founded: ci.companyFoundedZh || ci.companyFoundedEn || '',
+          company_team: ci.companyTeamZh || ci.companyTeamEn || '',
+          company_clients: ci.companyClientsZh || ci.companyClientsEn || '',
+          website: ci.website || '',
+          contact_name: ci.contactName || '',
+          contact_phone: ci.contactPhone || '',
+          contact_email: ci.contactEmail || '',
+        };
+      }
+    } catch {}
+
+    res.json({
+      intake: {
+        id: row.id,
+        name: row.name,
+        status: row.status,
+        website: row.website,
+        industry_hint: row.industryHint,
+        free_text: row.freeText,
+        service_pricing: row.servicePricingJson,
+        supplier_id: row.supplierId,
+        created_at: row.createdAt,
+        updated_at: row.updatedAt,
+        finalized_at: row.finalizedAt,
+      },
+      supplier,
+      company,
+      capabilities: caps.map(c => ({
+        id: c.id,
+        rc_label: c.rcLabel,
+        name_zh: c.nameZh,
+        name_en: c.nameEn,
+        description_zh: c.descriptionZh,
+        description_en: c.descriptionEn,
+        source_quote: c.sourceQuote,
+        position: c.position,
+        source: c.source,
+        confirmed: c.confirmed,
+      })),
+      rolepacks: rps.map(r => ({
+        id: r.id,
+        rp_label: r.rpLabel,
+        name_zh: r.nameZh,
+        name_en: r.nameEn,
+        industry: r.industryJson,
+        company_size: r.companySizeJson,
+        department: r.departmentJson,
+        questionnaire: r.questionnaireJson,
+        generated: r.generatedJson,
+        materials_draft: r.materialsDraftJson,
+        status: r.status,
+        position: r.position,
+        capability_ids: r.capability_ids,
+      })),
+      files: files.map(f => ({
+        id: f.id,
+        kind: f.kind,
+        filename: f.filename,
+        display_name: f.displayName,
+        size_bytes: f.sizeBytes,
+        rolepack_id: f.rolepackId,
+        created_at: f.createdAt,
+      })),
     });
-    if (!intake) return res.status(404).json({ error: 'not_found' });
-    res.json(intake);
   } catch (err) { next(err); }
 });
 
-// PATCH /api/intakes/:id/fields — bulk upsert form fields
-router.patch('/:id/fields', requireSupplier, async (req, res, next) => {
+// ── PATCH /api/intakes/:id ────────────────────────────────────────────────────
+
+router.patch('/:id', requireAuth, async (req, res, next) => {
   try {
-    const intake = await getOwnIntake(req.params.id, req.user.supplierId);
-    if (!intake) return res.status(404).json({ error: 'not_found' });
+    if (req.user.role === 'supplier') {
+      const intake = await getOwnIntake(req.params.id, req.user.supplierId);
+      if (!intake) return res.status(404).json({ error: 'not_found' });
+    } else {
+      const exists = await prisma.intake.findUnique({ where: { id: req.params.id } });
+      if (!exists) return res.status(404).json({ error: 'not_found' });
+    }
 
-    const { fields } = req.body;
-    if (!Array.isArray(fields)) return res.status(400).json({ error: 'fields must be an array' });
+    const data = {};
+    const b = req.body;
+    if (typeof b.name === 'string') data.name = b.name;
+    if (typeof b.free_text === 'string') data.freeText = b.free_text;
+    if (typeof b.industry_hint === 'string') data.industryHint = b.industry_hint;
+    if (typeof b.website === 'string') data.website = b.website;
+    if (b.service_pricing != null) data.servicePricingJson = b.service_pricing;
+    if (typeof b.status === 'string' && b.status !== 'published') data.status = b.status;
 
-    await Promise.all(fields.map(f =>
-      prisma.intakeField.upsert({
-        where: { intakeId_fieldId: { intakeId: intake.id, fieldId: f.fieldId } },
-        update: { valueZh: f.valueZh ?? null, valueEn: f.valueEn ?? null, status: 'filled' },
-        create: {
-          intakeId: intake.id,
-          fieldId: f.fieldId,
-          section: f.section ?? 1,
-          labelZh: f.labelZh ?? '',
-          labelEn: f.labelEn ?? '',
-          valueZh: f.valueZh ?? null,
-          valueEn: f.valueEn ?? null,
-          status: 'filled',
-        },
-      })
-    ));
-    await prisma.intake.update({ where: { id: intake.id }, data: { updatedAt: new Date() } });
+    if (Object.keys(data).length === 0) return res.json({ ok: true, noop: true });
+    await prisma.intake.update({ where: { id: req.params.id }, data });
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
 
-// POST /api/intakes/:id/submit
-router.post('/:id/submit', requireSupplier, async (req, res, next) => {
+// ── DELETE /api/intakes/:id ───────────────────────────────────────────────────
+
+router.delete('/:id', requireSupplier, async (req, res, next) => {
   try {
     const intake = await getOwnIntake(req.params.id, req.user.supplierId);
     if (!intake) return res.status(404).json({ error: 'not_found' });
-    if (intake.status !== 'draft' && intake.status !== 'roles_ready') {
-      return res.status(409).json({ error: 'cannot_submit', status: intake.status });
-    }
-    await prisma.intake.update({
-      where: { id: intake.id },
-      data: { status: 'new', submittedAt: new Date() },
+
+    const published = await prisma.intakeRolepack.findFirst({
+      where: { intakeId: req.params.id, status: 'published' },
     });
+    if (published) return res.status(400).json({ ok: false, reason: 'published' });
+
+    const files = await prisma.intakeFile.findMany({ where: { intakeId: req.params.id } });
+    for (const f of files) await deleteFile(f.storageKey).catch(() => {});
+
+    await prisma.intake.delete({ where: { id: req.params.id } });
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
 
 // ── Capabilities ─────────────────────────────────────────────────────────────
 
-// GET /api/intakes/:id/capabilities
 router.get('/:id/capabilities', requireAuth, async (req, res, next) => {
   try {
-    const intake = await getOwnIntake(req.params.id, req.user.supplierId);
-    if (!intake && req.user.role !== 'curator') return res.status(404).json({ error: 'not_found' });
-
-    const capabilities = await prisma.capability.findMany({
+    const where = req.user.role === 'curator'
+      ? { id: req.params.id }
+      : { id: req.params.id, supplierId: req.user.supplierId };
+    const intake = await prisma.intake.findFirst({ where });
+    if (!intake) return res.status(404).json({ error: 'not_found' });
+    const caps = await prisma.capability.findMany({
       where: { intakeId: req.params.id },
       orderBy: { position: 'asc' },
     });
-    res.json(capabilities);
+    res.json({ capabilities: caps.map(c => ({
+      id: c.id, rc_label: c.rcLabel, name_zh: c.nameZh, name_en: c.nameEn,
+      description_zh: c.descriptionZh, description_en: c.descriptionEn,
+      source_quote: c.sourceQuote, position: c.position, source: c.source, confirmed: c.confirmed,
+    })) });
   } catch (err) { next(err); }
 });
 
-// POST /api/intakes/:id/capabilities — add a capability
 router.post('/:id/capabilities', requireSupplier, async (req, res, next) => {
   try {
     const intake = await getOwnIntake(req.params.id, req.user.supplierId);
@@ -156,11 +300,27 @@ router.post('/:id/capabilities', requireSupplier, async (req, res, next) => {
         confirmed: true,
       },
     });
-    res.status(201).json({ ok: true, id: cap.id, rcLabel });
+    res.status(201).json({ ok: true, id: cap.id, rc_label: rcLabel });
   } catch (err) { next(err); }
 });
 
-// PATCH /api/intakes/:id/capabilities — bulk update or confirm_all
+router.patch('/:id/capabilities/:capId', requireSupplier, async (req, res, next) => {
+  try {
+    const intake = await getOwnIntake(req.params.id, req.user.supplierId);
+    if (!intake) return res.status(404).json({ error: 'not_found' });
+    const { name, description, confirmed, position } = req.body;
+    const data = {};
+    if (name) { data.nameZh = name.zh ?? ''; data.nameEn = name.en ?? ''; }
+    if (description) { data.descriptionZh = description.zh ?? ''; data.descriptionEn = description.en ?? ''; }
+    if (typeof confirmed === 'boolean') data.confirmed = confirmed;
+    if (typeof position === 'number') data.position = position;
+    if (Object.keys(data).length) {
+      await prisma.capability.updateMany({ where: { id: req.params.capId, intakeId: intake.id }, data });
+    }
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
 router.patch('/:id/capabilities', requireSupplier, async (req, res, next) => {
   try {
     const intake = await getOwnIntake(req.params.id, req.user.supplierId);
@@ -178,14 +338,14 @@ router.patch('/:id/capabilities', requireSupplier, async (req, res, next) => {
       if (u.name) { data.nameZh = u.name.zh ?? ''; data.nameEn = u.name.en ?? ''; }
       if (u.description) { data.descriptionZh = u.description.zh ?? ''; data.descriptionEn = u.description.en ?? ''; }
       if (typeof u.position === 'number') data.position = u.position;
-      if (Object.keys(data).length === 0) return Promise.resolve();
+      if (typeof u.confirmed === 'boolean') data.confirmed = u.confirmed;
+      if (!Object.keys(data).length) return Promise.resolve();
       return prisma.capability.updateMany({ where: { id: u.id, intakeId: intake.id }, data });
     }));
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
 
-// DELETE /api/intakes/:id/capabilities/:capId
 router.delete('/:id/capabilities/:capId', requireSupplier, async (req, res, next) => {
   try {
     const intake = await getOwnIntake(req.params.id, req.user.supplierId);
@@ -195,21 +355,22 @@ router.delete('/:id/capabilities/:capId', requireSupplier, async (req, res, next
   } catch (err) { next(err); }
 });
 
-// ── Intake Rolepacks (draft roles) ────────────────────────────────────────────
+// ── Rolepacks (draft roles) ───────────────────────────────────────────────────
 
-// GET /api/intakes/:id/rolepacks
 router.get('/:id/rolepacks', requireAuth, async (req, res, next) => {
   try {
-    const rolepacks = await prisma.intakeRolepack.findMany({
+    const rps = await prisma.intakeRolepack.findMany({
       where: { intakeId: req.params.id },
-      include: { capabilities: { include: { capability: true }, orderBy: { position: 'asc' } } },
       orderBy: { position: 'asc' },
     });
-    res.json(rolepacks);
+    const links = await prisma.rolepackCapability.findMany({
+      where: { rolepackId: { in: rps.map(r => r.id) } },
+    });
+    for (const rp of rps) rp.capability_ids = links.filter(l => l.rolepackId === rp.id).map(l => l.capabilityId);
+    res.json({ rolepacks: rps });
   } catch (err) { next(err); }
 });
 
-// POST /api/intakes/:id/rolepacks — create a draft rolepack
 router.post('/:id/rolepacks', requireSupplier, async (req, res, next) => {
   try {
     const intake = await getOwnIntake(req.params.id, req.user.supplierId);
@@ -243,34 +404,30 @@ router.post('/:id/rolepacks', requireSupplier, async (req, res, next) => {
         skipDuplicates: true,
       });
     }
-
-    res.status(201).json({ ok: true, id: rp.id, rpLabel });
+    res.status(201).json({ ok: true, id: rp.id, rp_label: rpLabel });
   } catch (err) { next(err); }
 });
 
-// PATCH /api/intakes/:id/rolepacks/:rpId
 router.patch('/:id/rolepacks/:rpId', requireAuth, async (req, res, next) => {
   try {
-    // Supplier: own intake only. Curator: any.
     if (req.user.role === 'supplier') {
       const intake = await getOwnIntake(req.params.id, req.user.supplierId);
       if (!intake) return res.status(404).json({ error: 'not_found' });
     }
-
-    const { name, industry, company_size, department, questionnaire, capability_ids, position, rp_label } = req.body;
+    const { name, industry, company_size, department, questionnaire, generated, capability_ids, position, rp_label } = req.body;
     const data = {};
     if (name) { data.nameZh = name.zh ?? ''; data.nameEn = name.en ?? ''; }
     if (Array.isArray(industry)) data.industryJson = industry;
     if (Array.isArray(company_size)) data.companySizeJson = company_size;
     if (department != null) data.departmentJson = department;
     if (questionnaire != null) data.questionnaireJson = questionnaire;
+    if (generated != null) data.generatedJson = generated;
     if (typeof position === 'number') data.position = position;
     if (typeof rp_label === 'string' && req.user.role === 'curator') data.rpLabel = rp_label.trim().toUpperCase();
 
     if (Object.keys(data).length) {
       await prisma.intakeRolepack.updateMany({ where: { id: req.params.rpId, intakeId: req.params.id }, data });
     }
-
     if (Array.isArray(capability_ids)) {
       await prisma.rolepackCapability.deleteMany({ where: { rolepackId: req.params.rpId } });
       if (capability_ids.length) {
@@ -284,7 +441,6 @@ router.patch('/:id/rolepacks/:rpId', requireAuth, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// DELETE /api/intakes/:id/rolepacks/:rpId
 router.delete('/:id/rolepacks/:rpId', requireSupplier, async (req, res, next) => {
   try {
     const intake = await getOwnIntake(req.params.id, req.user.supplierId);
@@ -296,16 +452,6 @@ router.delete('/:id/rolepacks/:rpId', requireSupplier, async (req, res, next) =>
 
 // ── Files ─────────────────────────────────────────────────────────────────────
 
-function kindFor(filename) {
-  const ext = (filename || '').toLowerCase().split('.').pop();
-  if (ext === 'pdf') return 'pdf';
-  if (['ppt', 'pptx'].includes(ext)) return 'ppt';
-  if (['doc', 'docx', 'txt', 'md'].includes(ext)) return 'doc';
-  if (['m4a', 'mp3', 'wav', 'ogg'].includes(ext)) return 'voice';
-  return 'other';
-}
-
-// GET /api/intakes/:id/files
 router.get('/:id/files', requireAuth, async (req, res, next) => {
   try {
     if (req.user.role === 'supplier') {
@@ -314,14 +460,15 @@ router.get('/:id/files', requireAuth, async (req, res, next) => {
     }
     const files = await prisma.intakeFile.findMany({
       where: { intakeId: req.params.id },
-      select: { id: true, kind: true, filename: true, displayName: true, sizeBytes: true, rolepackId: true, createdAt: true },
       orderBy: { createdAt: 'asc' },
     });
-    res.json({ files });
+    res.json({ files: files.map(f => ({
+      id: f.id, kind: f.kind, filename: f.filename, display_name: f.displayName,
+      size_bytes: f.sizeBytes, rolepack_id: f.rolepackId, created_at: f.createdAt,
+    })) });
   } catch (err) { next(err); }
 });
 
-// POST /api/intakes/:id/files — multipart upload
 router.post('/:id/files', requireSupplier, upload.array('files'), async (req, res, next) => {
   try {
     const intake = await getOwnIntake(req.params.id, req.user.supplierId);
@@ -341,36 +488,34 @@ router.post('/:id/files', requireSupplier, upload.array('files'), async (req, re
       if (extractedText) extractedText = String(extractedText).slice(0, 500_000);
 
       await uploadFile(key, f.buffer, f.mimetype);
-
       await prisma.intakeFile.create({
-        data: {
-          id: fid,
-          intakeId: intake.id,
-          kind,
-          filename: safeName,
-          sizeBytes: f.size,
-          storageKey: key,
-          rolepackId,
-          extractedText,
-        },
+        data: { id: fid, intakeId: intake.id, kind, filename: safeName, sizeBytes: f.size, storageKey: key, rolepackId, extractedText },
       });
-      stored.push({ id: fid, kind, filename: safeName, size: f.size });
+      stored.push({ id: fid, kind, filename: safeName, size: f.size, size_bytes: f.size });
     }
-
     await prisma.intake.update({ where: { id: intake.id }, data: { updatedAt: new Date() } });
     res.json({ files: stored });
   } catch (err) { next(err); }
 });
 
-// DELETE /api/intakes/:id/files/:fid
+router.patch('/:id/files/:fid', requireSupplier, async (req, res, next) => {
+  try {
+    const intake = await getOwnIntake(req.params.id, req.user.supplierId);
+    if (!intake) return res.status(404).json({ error: 'not_found' });
+    const { display_name } = req.body;
+    if (typeof display_name === 'string') {
+      await prisma.intakeFile.updateMany({ where: { id: req.params.fid, intakeId: intake.id }, data: { displayName: display_name } });
+    }
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
 router.delete('/:id/files/:fid', requireSupplier, async (req, res, next) => {
   try {
     const intake = await getOwnIntake(req.params.id, req.user.supplierId);
     if (!intake) return res.status(404).json({ error: 'not_found' });
-
     const file = await prisma.intakeFile.findFirst({ where: { id: req.params.fid, intakeId: intake.id } });
     if (!file) return res.status(404).json({ error: 'not_found' });
-
     await deleteFile(file.storageKey).catch(() => {});
     await prisma.intakeFile.delete({ where: { id: file.id } });
     res.json({ ok: true });

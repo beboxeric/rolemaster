@@ -54,20 +54,18 @@ model Supplier {
 // ── Intakes (supplier submission flow) ───────────────────────────────────────
 
 model Intake {
-  id                String    @id
-  supplierId        String    @map("supplier_id")
-  productId         String    @map("product_id")
-  productName       String    @map("product_name")
-  productSubtitleZh String?   @map("product_subtitle_zh")
-  productSubtitleEn String?   @map("product_subtitle_en")
-  // Status progression:
-  // draft → analyzing_capabilities → capabilities_ready → matching_roles
-  // → roles_ready → new → review → revision → approved → published
-  status            String    @default("draft")
-  materials         Json      @default("[]")
-  submittedAt       DateTime? @map("submitted_at")
-  createdAt         DateTime  @default(now()) @map("created_at")
-  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at")
+  id                 String    @id
+  supplierId         String    @map("supplier_id")
+  name               String?
+  freeText           String?   @map("free_text")
+  industryHint       String?   @map("industry_hint")
+  website            String?
+  servicePricingJson Json?     @map("service_pricing_json")
+  status             String    @default("draft")
+  finalizedAt        DateTime? @map("finalized_at")
+  submittedAt        DateTime? @map("submitted_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @default(now()) @updatedAt @map("updated_at")
 
   supplier      Supplier          @relation(fields: [supplierId], references: [id], onDelete: Cascade)
   fields        IntakeField[]
