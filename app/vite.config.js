@@ -7,10 +7,9 @@ export default defineConfig({
     port: 5173,
     host: true,
     open: false,
-    proxy: {
-      // wrangler pages dev runs on :8788 by default and serves /api/* via Pages Functions.
-      '/api': { target: 'http://localhost:8788', changeOrigin: true },
-    },
+    // No proxy needed: VITE_API_URL points directly to the Node.js backend.
+    // Keep this block if you ever want to fall back to Cloudflare wrangler:
+    // proxy: { '/api': { target: 'http://localhost:8788', changeOrigin: true } },
   },
   build: {
     outDir: '../dist',     // repo-root dist/, sibling to functions/

@@ -7,6 +7,31 @@ import { requireAuth } from '../middleware/auth.js';
 
 const router = Router();
 
+// Serialize user to the shape the frontend expects (snake_case).
+function serializeUser(user) {
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    role: user.role,
+    supplier_id: user.supplierId ?? null,
+    language: user.language ?? null,
+    is_superadmin: user.isSuper ? 1 : 0,
+  };
+}
+
+function serializeSupplier(supplier) {
+  if (!supplier) return null;
+  return {
+    id: supplier.id,
+    name: supplier.name,
+    short_name: supplier.shortName,
+    hq: supplier.hq,
+    contact: supplier.contact ?? null,
+    phone: supplier.phone ?? null,
+  };
+}
+
 // POST /api/auth/register
 router.post('/register', async (req, res, next) => {
   try {
@@ -25,36 +50,22 @@ router.post('/register', async (req, res, next) => {
     const userId = shortId('USR-', 10);
 
     let supplierId = null;
+    let supplier = null;
     if (role === 'supplier') {
       supplierId = shortId('SUP-', 10);
-      await prisma.supplier.create({
-        data: {
-          id: supplierId,
-          name,
-          shortName: name.slice(0, 20),
-          hq: '',
-        },
+      supplier = await prisma.supplier.create({
+        data: { id: supplierId, name, shortName: name.slice(0, 20), hq: '' },
       });
     }
 
     const user = await prisma.user.create({
-      data: {
-        id: userId,
-        email,
-        password: hash,
-        salt,
-        name,
-        role,
-        supplierId,
-      },
+      data: { id: userId, email, password: hash, salt, name, role, supplierId },
     });
 
     const token = signToken(user);
     setTokenCookie(res, token);
-    res.json({ ok: true, token, user: { id: user.id, email: user.email, name: user.name, role: user.role, supplierId: user.supplierId } });
-  } catch (err) {
-    next(err);
-  }
+    res.json({ ok: true, token, user: serializeUser(user), supplier: serializeSupplier(supplier) });
+  } catch (err) { next(err); }
 });
 
 // POST /api/auth/login
@@ -71,12 +82,15 @@ router.post('/login', async (req, res, next) => {
     const ok = verifyPassword(password, user.password, user.salt);
     if (!ok) return res.status(401).json({ error: 'invalid_credentials' });
 
+    let supplier = null;
+    if (user.supplierId) {
+      supplier = await prisma.supplier.findUnique({ where: { id: user.supplierId } });
+    }
+
     const token = signToken(user);
     setTokenCookie(res, token);
-    res.json({ ok: true, token, user: { id: user.id, email: user.email, name: user.name, role: user.role, supplierId: user.supplierId } });
-  } catch (err) {
-    next(err);
-  }
+    res.json({ ok: true, token, user: serializeUser(user), supplier: serializeSupplier(supplier) });
+  } catch (err) { next(err); }
 });
 
 // POST /api/auth/logout
@@ -90,10 +104,14 @@ router.get('/me', requireAuth, async (req, res, next) => {
   try {
     const user = await prisma.user.findUnique({ where: { id: req.user.id } });
     if (!user) return res.status(404).json({ error: 'not_found' });
-    res.json({ id: user.id, email: user.email, name: user.name, role: user.role, supplierId: user.supplierId, language: user.language });
-  } catch (err) {
-    next(err);
-  }
+
+    let supplier = null;
+    if (user.supplierId) {
+      supplier = await prisma.supplier.findUnique({ where: { id: user.supplierId } });
+    }
+
+    res.json({ user: serializeUser(user), supplier: serializeSupplier(supplier) });
+  } catch (err) { next(err); }
 });
 
 // PATCH /api/auth/me/language
@@ -103,9 +121,7 @@ router.patch('/me/language', requireAuth, async (req, res, next) => {
     if (!['zh', 'en'].includes(language)) return res.status(400).json({ error: 'invalid language' });
     await prisma.user.update({ where: { id: req.user.id }, data: { language } });
     res.json({ ok: true });
-  } catch (err) {
-    next(err);
-  }
+  } catch (err) { next(err); }
 });
 
 export default router;

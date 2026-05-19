@@ -4,7 +4,9 @@
 //      two tabs (curator + supplier) without one clobbering the other.
 //   2. The rm_token cookie — default fallback for fresh tabs and refreshes.
 
-const BASE = '/api';
+// VITE_API_URL points to the Node.js backend (e.g. http://localhost:3000).
+// Falls back to same-origin /api for Cloudflare Pages deployments.
+const BASE = (import.meta.env.VITE_API_URL || '') + '/api';
 const TOKEN_KEY = 'rm_session_token';
 
 export function setSessionToken(token) {
