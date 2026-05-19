@@ -9,6 +9,8 @@ import curatorRouter from './routes/curator.js';
 import salesRouter from './routes/sales.js';
 import publicRouter from './routes/public.js';
 import taxonomyRouter from './routes/taxonomy.js';
+import notificationsRouter from './routes/notifications.js';
+import suppliersRouter from './routes/suppliers.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
 const app = express();
@@ -29,6 +31,8 @@ app.use('/api/curator', curatorRouter);
 app.use('/api/sales', salesRouter);
 app.use('/api/public', publicRouter);
 app.use('/api/taxonomy', taxonomyRouter);
+app.use('/api/notifications', notificationsRouter);
+app.use('/api/suppliers', suppliersRouter);
 
 app.use(errorHandler);
 

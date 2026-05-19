@@ -8,23 +8,27 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
+// ── Users & Auth ─────────────────────────────────────────────────────────────
+
 model User {
-  id          String    @id
-  email       String    @unique
-  password    String
-  salt        String
-  name        String
-  role        String    // supplier | curator | sales
-  supplierId  String?   @map("supplier_id")
-  language    String?
-  isSuper     Boolean   @default(false) @map("is_superadmin")
-  createdAt   DateTime  @default(now()) @map("created_at")
+  id         String   @id
+  email      String   @unique
+  password   String
+  salt       String
+  name       String
+  role       String   // supplier | curator | sales
+  supplierId String?  @map("supplier_id")
+  language   String?
+  isSuper    Boolean  @default(false) @map("is_superadmin")
+  createdAt  DateTime @default(now()) @map("created_at")
 
   supplier      Supplier?      @relation(fields: [supplierId], references: [id])
   notifications Notification[]
 
   @@map("users")
 }
+
+// ── Suppliers ─────────────────────────────────────────────────────────────────
 
 model Supplier {
   id        String   @id
@@ -39,7 +43,7 @@ model Supplier {
   createdAt DateTime @default(now()) @map("created_at")
 
   users       User[]
-  submissions Submission[]
+  intakes     Intake[]
   rolepacks   Rolepack[]
   products    Product[]
   companyInfo SupplierCompanyInfo?
@@ -47,207 +51,252 @@ model Supplier {
   @@map("suppliers")
 }
 
-model Submission {
-  id                 String   @id
-  supplierId         String   @map("supplier_id")
-  productId          String   @map("product_id")
-  productName        String   @map("product_name")
-  productSubtitleZh  String?  @map("product_subtitle_zh")
-  productSubtitleEn  String?  @map("product_subtitle_en")
-  status             String   @default("draft") // draft|new|review|revision|approved|published
-  prefill            Boolean  @default(false)
-  materials          Json     @default("[]")
-  rolepackId         String?  @map("rolepack_id")
-  submittedAt        DateTime? @map("submitted_at")
-  createdAt          DateTime @default(now()) @map("created_at")
-  updatedAt          DateTime @default(now()) @updatedAt @map("updated_at")
+// ── Intakes (supplier submission flow) ───────────────────────────────────────
 
-  supplier      Supplier         @relation(fields: [supplierId], references: [id], onDelete: Cascade)
-  fields        SubmissionField[]
-  files         File[]
+model Intake {
+  id                String    @id
+  supplierId        String    @map("supplier_id")
+  productId         String    @map("product_id")
+  productName       String    @map("product_name")
+  productSubtitleZh String?   @map("product_subtitle_zh")
+  productSubtitleEn String?   @map("product_subtitle_en")
+  // Status progression:
+  // draft → analyzing_capabilities → capabilities_ready → matching_roles
+  // → roles_ready → new → review → revision → approved → published
+  status            String    @default("draft")
+  materials         Json      @default("[]")
+  submittedAt       DateTime? @map("submitted_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  supplier      Supplier          @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  fields        IntakeField[]
+  files         IntakeFile[]
   auditLogs     AuditLog[]
   chatMessages  ChatMessage[]
-  layerAtoms    LayerAtom[]
-  generated     SubmissionGenerated?
+  capabilities  Capability[]
+  intakeRolepacks IntakeRolepack[]
+  generated     IntakeGenerated?
   salesMaterials SalesMaterialsDraft?
-  comments      SubmissionComment[]
+  comments      IntakeComment[]
 
-  @@map("submissions")
+  @@map("intakes")
 }
 
-model SubmissionField {
-  submissionId String  @map("submission_id")
-  fieldId      String  @map("field_id")
-  section      Int
-  labelZh      String  @map("label_zh")
-  labelEn      String  @map("label_en")
-  valueZh      String? @map("value_zh")
-  valueEn      String? @map("value_en")
-  status       String  // ai|filled|empty|weak
-  hintZh       String? @map("hint_zh")
-  hintEn       String? @map("hint_en")
-  optional     Boolean @default(false)
+// Per-section form fields for an intake (bilingual)
+model IntakeField {
+  intakeId String  @map("intake_id")
+  fieldId  String  @map("field_id")
+  section  Int
+  labelZh  String  @map("label_zh")
+  labelEn  String  @map("label_en")
+  valueZh  String? @map("value_zh")
+  valueEn  String? @map("value_en")
+  status   String  // ai | filled | empty | weak
+  hintZh   String? @map("hint_zh")
+  hintEn   String? @map("hint_en")
+  optional Boolean @default(false)
 
-  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  intake Intake @relation(fields: [intakeId], references: [id], onDelete: Cascade)
 
-  @@id([submissionId, fieldId])
-  @@map("submission_fields")
+  @@id([intakeId, fieldId])
+  @@map("intake_fields")
 }
 
-model File {
-  id           String   @id
-  submissionId String   @map("submission_id")
-  kind         String
-  filename     String
-  sizeBytes    Int      @map("size_bytes")
-  storageKey   String   @map("storage_key")
-  createdAt    DateTime @default(now()) @map("created_at")
+// Uploaded materials for an intake
+model IntakeFile {
+  id            String   @id
+  intakeId      String   @map("intake_id")
+  kind          String   // pdf | ppt | doc | voice | other
+  filename      String
+  displayName   String?  @map("display_name")
+  sizeBytes     Int      @map("size_bytes")
+  storageKey    String   @map("storage_key")  // R2 object key
+  rolepackId    String?  @map("rolepack_id")
+  extractedText String?  @map("extracted_text")
+  createdAt     DateTime @default(now()) @map("created_at")
 
-  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  intake Intake @relation(fields: [intakeId], references: [id], onDelete: Cascade)
 
-  @@map("files")
+  @@map("intake_files")
 }
 
-model AuditLog {
-  id           Int      @id @default(autoincrement())
-  submissionId String?  @map("submission_id")
-  who          String
-  actionZh     String   @map("action_zh")
-  actionEn     String   @map("action_en")
-  createdAt    DateTime @default(now()) @map("created_at")
+// AI-extracted or supplier-authored capabilities (RC-01, RC-02, …)
+model Capability {
+  id            String   @id
+  intakeId      String   @map("intake_id")
+  rcLabel       String   @map("rc_label")   // RC-01, RC-02, …
+  nameZh        String?  @map("name_zh")
+  nameEn        String?  @map("name_en")
+  descriptionZh String?  @map("description_zh")
+  descriptionEn String?  @map("description_en")
+  sourceQuote   String?  @map("source_quote")
+  sourceQuoteEn String?  @map("source_quote_en")
+  confidence    Float?
+  position      Int      @default(0)
+  source        String   @default("ai")    // ai | supplier
+  confirmed     Boolean  @default(false)
+  createdAt     DateTime @default(now()) @map("created_at")
+  editedAt      DateTime? @map("edited_at")
 
-  submission Submission? @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  intake              Intake               @relation(fields: [intakeId], references: [id], onDelete: Cascade)
+  rolepackCapabilities RolepackCapability[]
 
-  @@map("audit_log")
+  @@map("capabilities")
 }
+
+// Draft rolepacks (RP-01, RP-02, …) linked to an intake — supplier authors these
+model IntakeRolepack {
+  id               String   @id
+  intakeId         String   @map("intake_id")
+  rpLabel          String   @map("rp_label")  // RP-01, RP-02, …
+  nameZh           String?  @map("name_zh")
+  nameEn           String?  @map("name_en")
+  industryJson     Json     @default("[]") @map("industry_json")
+  companySizeJson  Json     @default("[]") @map("company_size_json")
+  departmentJson   Json     @default("{}") @map("department_json")
+  questionnaireJson Json?   @map("questionnaire_json")
+  generatedJson    Json?    @map("generated_json")  // AI-generated fields
+  position         Int      @default(0)
+  status           String   @default("draft")  // draft | published
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at")
+
+  intake       Intake               @relation(fields: [intakeId], references: [id], onDelete: Cascade)
+  capabilities RolepackCapability[]
+
+  @@map("intake_rolepacks")
+}
+
+// Junction: which capabilities belong to which draft rolepack
+model RolepackCapability {
+  rolepackId   String @map("rolepack_id")
+  capabilityId String @map("capability_id")
+  position     Int    @default(0)
+
+  rolepack   IntakeRolepack @relation(fields: [rolepackId], references: [id], onDelete: Cascade)
+  capability Capability     @relation(fields: [capabilityId], references: [id], onDelete: Cascade)
+
+  @@id([rolepackId, capabilityId])
+  @@map("rolepack_capabilities")
+}
+
+// ── Published Catalog ─────────────────────────────────────────────────────────
 
 model Rolepack {
-  id                  String   @id
-  supplierId          String?  @map("supplier_id")
-  supplierName        String   @map("supplier_name")
-  data                Json
-  publishedAt         DateTime @default(now()) @map("published_at")
-  pitchDeckZhUrl      String?  @map("pitch_deck_zh_url")
-  pitchDeckEnUrl      String?  @map("pitch_deck_en_url")
-  productManualZhUrl  String?  @map("product_manual_zh_url")
-  productManualEnUrl  String?  @map("product_manual_en_url")
-  assetStatus         String   @default("pending") @map("asset_status") // pending|generating|ready|failed
-  assetGeneratedAt    DateTime? @map("asset_generated_at")
-  assetFailedReason   String?  @map("asset_failed_reason")
+  id                 String    @id
+  supplierId         String?   @map("supplier_id")
+  supplierName       String    @map("supplier_name")
+  data               Json
+  publishedAt        DateTime  @default(now()) @map("published_at")
+  pitchDeckZhUrl     String?   @map("pitch_deck_zh_url")
+  pitchDeckEnUrl     String?   @map("pitch_deck_en_url")
+  productManualZhUrl String?   @map("product_manual_zh_url")
+  productManualEnUrl String?   @map("product_manual_en_url")
+  assetStatus        String    @default("pending") @map("asset_status")
+  assetGeneratedAt   DateTime? @map("asset_generated_at")
+  assetFailedReason  String?   @map("asset_failed_reason")
 
   supplier Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
 
   @@map("rolepacks")
 }
 
-model ChatMessage {
-  id           Int      @id @default(autoincrement())
-  submissionId String   @map("submission_id")
-  role         String
-  content      String
-  meta         Json?
-  createdAt    DateTime @default(now()) @map("created_at")
+// ── Audit & Messaging ─────────────────────────────────────────────────────────
 
-  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+model AuditLog {
+  id       Int      @id @default(autoincrement())
+  intakeId String?  @map("intake_id")
+  who      String
+  actionZh String   @map("action_zh")
+  actionEn String   @map("action_en")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  intake Intake? @relation(fields: [intakeId], references: [id], onDelete: Cascade)
+
+  @@map("audit_log")
+}
+
+model ChatMessage {
+  id       Int      @id @default(autoincrement())
+  intakeId String   @map("intake_id")
+  role     String
+  content  String
+  meta     Json?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  intake Intake @relation(fields: [intakeId], references: [id], onDelete: Cascade)
 
   @@map("chat_messages")
 }
 
-model LayerAtom {
-  id            String   @id
-  submissionId  String   @map("submission_id")
-  layer         String   // capability|knowledge|interface
-  atomId        String   @map("atom_id")
-  nameZh        String?  @map("name_zh")
-  nameEn        String?  @map("name_en")
-  descriptionZh String?  @map("description_zh")
-  descriptionEn String?  @map("description_en")
-  sourceQuote   String?  @map("source_quote")
-  confidence    Float?
-  position      Int      @default(0)
-  createdAt     DateTime @default(now()) @map("created_at")
-  editedAt      DateTime? @map("edited_at")
-  editedBy      String?  @map("edited_by")
+model IntakeComment {
+  id         String   @id
+  intakeId   String   @map("intake_id")
+  authorId   String   @map("author_id")
+  authorRole String   @map("author_role")  // curator | supplier
+  authorName String   @map("author_name")
+  body       String
+  createdAt  DateTime @default(now()) @map("created_at")
 
-  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  intake Intake @relation(fields: [intakeId], references: [id], onDelete: Cascade)
 
-  @@map("layer_atoms")
+  @@map("intake_comments")
 }
 
-model SubmissionGenerated {
-  submissionId              String   @id @map("submission_id")
-  customerVoicePainZh       String?  @map("customer_voice_pain_zh")
-  customerVoicePainEn       String?  @map("customer_voice_pain_en")
-  valuePositioningZh        String?  @map("value_positioning_zh")
-  valuePositioningEn        String?  @map("value_positioning_en")
-  capabilitySummaryZh       String?  @map("capability_summary_zh")
-  capabilitySummaryEn       String?  @map("capability_summary_en")
-  oneLinerZh                String?  @map("one_liner_zh")
-  oneLinerEn                String?  @map("one_liner_en")
-  aiAssemblyRecommendationZh String? @map("ai_assembly_recommendation_zh")
-  aiAssemblyRecommendationEn String? @map("ai_assembly_recommendation_en")
-  aiAssemblyAlternativesJson Json?   @map("ai_assembly_alternatives_json")
-  generatedAt               DateTime? @map("generated_at")
-  generatedBy               String?  @map("generated_by")
+// ── AI-Generated Content ──────────────────────────────────────────────────────
 
-  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+model IntakeGenerated {
+  intakeId                   String    @id @map("intake_id")
+  customerVoicePainZh        String?   @map("customer_voice_pain_zh")
+  customerVoicePainEn        String?   @map("customer_voice_pain_en")
+  valuePositioningZh         String?   @map("value_positioning_zh")
+  valuePositioningEn         String?   @map("value_positioning_en")
+  capabilitySummaryZh        String?   @map("capability_summary_zh")
+  capabilitySummaryEn        String?   @map("capability_summary_en")
+  oneLinerZh                 String?   @map("one_liner_zh")
+  oneLinerEn                 String?   @map("one_liner_en")
+  aiAssemblyRecommendationZh String?   @map("ai_assembly_recommendation_zh")
+  aiAssemblyRecommendationEn String?   @map("ai_assembly_recommendation_en")
+  aiAssemblyAlternativesJson Json?     @map("ai_assembly_alternatives_json")
+  generatedAt                DateTime? @map("generated_at")
+  generatedBy                String?   @map("generated_by")
 
-  @@map("submission_generated")
+  intake Intake @relation(fields: [intakeId], references: [id], onDelete: Cascade)
+
+  @@map("intake_generated")
 }
 
 model SalesMaterialsDraft {
-  submissionId          String   @id @map("submission_id")
-  pitchOutlineJson      Json?    @map("pitch_outline_json")
-  faqJson               Json?    @map("faq_json")
-  elevatorPitchZh       String?  @map("elevator_pitch_zh")
-  elevatorPitchEn       String?  @map("elevator_pitch_en")
-  discoveryQuestionsJson Json?   @map("discovery_questions_json")
-  generatedAt           DateTime? @map("generated_at")
-  editedAt              DateTime? @map("edited_at")
+  intakeId               String    @id @map("intake_id")
+  pitchOutlineJson       Json?     @map("pitch_outline_json")
+  faqJson                Json?     @map("faq_json")
+  elevatorPitchZh        String?   @map("elevator_pitch_zh")
+  elevatorPitchEn        String?   @map("elevator_pitch_en")
+  discoveryQuestionsJson Json?     @map("discovery_questions_json")
+  generatedAt            DateTime? @map("generated_at")
+  editedAt               DateTime? @map("edited_at")
 
-  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  intake Intake @relation(fields: [intakeId], references: [id], onDelete: Cascade)
 
   @@map("sales_materials_draft")
 }
 
-model SubmissionComment {
-  id           String   @id
-  submissionId String   @map("submission_id")
-  authorId     String   @map("author_id")
-  authorRole   String   @map("author_role") // curator|supplier
-  authorName   String   @map("author_name")
-  body         String
-  createdAt    DateTime @default(now()) @map("created_at")
-
-  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
-
-  @@map("submission_comments")
-}
+// ── Notifications ─────────────────────────────────────────────────────────────
 
 model Notification {
-  id          String   @id
-  userId      String   @map("user_id")
-  type        String   // submission_approved|submission_revision|submission_published|comment
-  payloadJson Json?    @map("payload_json")
+  id          String    @id
+  userId      String    @map("user_id")
+  type        String
+  payloadJson Json?     @map("payload_json")
   readAt      DateTime? @map("read_at")
-  createdAt   DateTime @default(now()) @map("created_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("notifications")
 }
 
-model SalesSession {
-  id         String   @id
-  userId     String?  @map("user_id")
-  email      String?
-  ipAddress  String?  @map("ip_address")
-  userAgent  String?  @map("user_agent")
-  signedInAt DateTime @default(now()) @map("signed_in_at")
-  expiresAt  DateTime @map("expires_at")
-
-  @@map("sales_sessions")
-}
+// ── Taxonomy ──────────────────────────────────────────────────────────────────
 
 model TaxonomyIndustry {
   id           String   @id
@@ -264,15 +313,7 @@ model TaxonomyIndustry {
   @@map("taxonomy_industries")
 }
 
-model PlatformLog {
-  id          String   @id
-  level       String   // info|warn|error
-  message     String
-  contextJson Json?    @map("context_json")
-  createdAt   DateTime @default(now()) @map("created_at")
-
-  @@map("platform_logs")
-}
+// ── Products & Company Info ───────────────────────────────────────────────────
 
 model Product {
   id         String   @id
@@ -290,20 +331,44 @@ model Product {
 }
 
 model SupplierCompanyInfo {
-  supplierId      String   @id @map("supplier_id")
-  companyNameZh   String?  @map("company_name_zh")
-  companyNameEn   String?  @map("company_name_en")
-  companyHqZh     String?  @map("company_hq_zh")
-  companyHqEn     String?  @map("company_hq_en")
-  companyFoundedZh String? @map("company_founded_zh")
-  companyFoundedEn String? @map("company_founded_en")
-  companyTeamZh   String?  @map("company_team_zh")
-  companyTeamEn   String?  @map("company_team_en")
-  companyClientsZh String? @map("company_clients_zh")
-  companyClientsEn String? @map("company_clients_en")
-  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
+  supplierId       String   @id @map("supplier_id")
+  companyNameZh    String?  @map("company_name_zh")
+  companyNameEn    String?  @map("company_name_en")
+  companyHqZh      String?  @map("company_hq_zh")
+  companyHqEn      String?  @map("company_hq_en")
+  companyFoundedZh String?  @map("company_founded_zh")
+  companyFoundedEn String?  @map("company_founded_en")
+  companyTeamZh    String?  @map("company_team_zh")
+  companyTeamEn    String?  @map("company_team_en")
+  companyClientsZh String?  @map("company_clients_zh")
+  companyClientsEn String?  @map("company_clients_en")
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at")
 
   supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
 
   @@map("supplier_company_info")
+}
+
+// ── Misc ──────────────────────────────────────────────────────────────────────
+
+model SalesSession {
+  id         String   @id
+  userId     String?  @map("user_id")
+  email      String?
+  ipAddress  String?  @map("ip_address")
+  userAgent  String?  @map("user_agent")
+  signedInAt DateTime @default(now()) @map("signed_in_at")
+  expiresAt  DateTime @map("expires_at")
+
+  @@map("sales_sessions")
+}
+
+model PlatformLog {
+  id          String   @id
+  level       String   // info | warn | error
+  message     String
+  contextJson Json?    @map("context_json")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@map("platform_logs")
 }
