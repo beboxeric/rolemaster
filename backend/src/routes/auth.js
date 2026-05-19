@@ -35,9 +35,11 @@ function serializeSupplier(supplier) {
 // POST /api/auth/register
 router.post('/register', async (req, res, next) => {
   try {
-    const { email, password, name, role = 'supplier' } = req.body;
-    if (!email || !password || !name) {
-      return res.status(400).json({ error: 'email, password and name are required' });
+    const { email, password, role = 'supplier' } = req.body;
+    // name is optional at registration — the onboarding step collects company info.
+    const name = req.body.name || email.split('@')[0];
+    if (!email || !password) {
+      return res.status(400).json({ error: 'email and password are required' });
     }
     if (!['supplier', 'curator', 'sales'].includes(role)) {
       return res.status(400).json({ error: 'invalid role' });
