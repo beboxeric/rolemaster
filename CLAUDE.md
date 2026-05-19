@@ -1,113 +1,124 @@
-# RoleMaster — agent guide
+# RoleMaster — 开发规范
 
-This repo is being built across **multiple concurrent Claude conversations**, one per portal page (curator, supplier, sales). The rules below keep those sessions from clobbering each other's work. Read this file in full before touching anything.
+## 项目概况
 
-## The one rule
+AI 能力交付平台。三个角色门户：
+- **Supplier（供应商）** — AI 咨询公司打包 AI 产品
+- **Curator（审核员）** — RoleMaster 内部审核并发布 RolePack
+- **Sales（销售）** — 销售人员浏览已发布的 RolePack 目录
 
-**`main` is a merge artifact, never a working surface.**
+## Git 工作流
 
-Every conversation works on its own branch in its own worktree, deploys to its own Cloudflare Pages preview alias, and never runs `wrangler pages deploy --branch=main` itself. Prod (`rolemaster.pages.dev`) is updated by the human, manually, after branches merge into `main`.
+### 分支规则
 
-If the user asks you to "deploy to prod" while you're on a feature branch and there's parallel work in another session, **stop and warn first** — the SPA is one bundle, your deploy will overwrite the other session's routes. Ask for one of:
-1. The other branch be merged to `main` first, then rebase + deploy from `main`.
-2. Hand over the other branch so you can merge locally, then deploy.
-3. Leave prod alone, keep the work on the preview URL.
-
-## Per-conversation setup
-
-Each conversation gets a worktree + branch + preview alias. Spin up a new lane with:
-
-```bash
-git worktree add .claude/worktrees/<lane> -b <lane> origin/main
-```
-
-Deploy with:
-
-```bash
-npx wrangler pages deploy dist --project-name=rolemaster --branch=<lane> --commit-dirty=true
-```
-
-That produces `https://<lane>.rolemaster.pages.dev`. Always share the preview URL when you finish a deploy (per the user's standing preference).
-
-Current lanes:
-
-| Lane (branch) | Owns | Preview URL |
+| 分支 | 用途 | 说明 |
 |---|---|---|
-| `claude/pedantic-swartz-f1c35c` (or successor `curator-redesign`) | curator portal — `/curator`, `/curator/workbench/:id`, `/curator/publish/:id` | `curator-prototype.rolemaster.pages.dev` |
-| `supplier-v2` | supplier portal — `/supplier`, registration, intake, form, confirm | `supplier-v2.rolemaster.pages.dev` |
-| `sales-*` (when needed) | sales portal — `/sales`, `/sales/rolepack/:id` | `sales-*.rolemaster.pages.dev` |
+| `main` | 生产分支 | 只接受来自 `develop` 的 PR，不直接提交 |
+| `develop` | 集成分支 | 日常开发的目标分支，所有功能分支合并到这里 |
+| `feature/xxx` | 功能分支 | 从 `develop` 创建，完成后 PR 回 `develop` |
+| `fix/xxx` | 修复分支 | 从 `develop` 创建（紧急 bug 从 `main` 创建） |
 
-## File ownership
+### 日常开发流程
 
-Stay in your lane. The table below is the source of truth — if it's not in your column, don't edit it without flagging the user first.
+```bash
+# 开始新功能
+git checkout develop
+git pull origin develop
+git checkout -b feature/your-feature-name
 
-### Curator lane owns
-- `app/src/screens/other.jsx` — `ScreenQueue`, `ScreenConfirm`-passthrough on the curator side, `ScreenPublish`
-- `app/src/screens/workbench.jsx`
-- `app/src/styles.css` — only the `Curator inbox …` block (search for the comment header)
-- `app/src/i18n.js` — `s6_*`, `s7_*`, `s8_*` keys
-- `functions/api/curator/**`
-- `functions/api/submissions/[id]/copilot.js` (curator-side AI assistance)
+# 开发、提交
+git add <files>
+git commit -m "feat: 描述这个功能做了什么"
 
-### Supplier lane owns
-- `app/src/screens/supplier-home.jsx`, `onboard.jsx`, `form.jsx`, `landing.jsx`
-- `app/src/screens/portal-login.jsx`
-- `app/src/styles.css` — supplier/landing/form blocks; v2 design system tokens are supplier-driven for now
-- `app/src/i18n.js` — `s1_*` through `s5_*` keys, plus shared `nav_*`, `status_*`, `copilot_*`, `save_state_*`, `progress_*`, `submit_*`, `add_*`, `sec*`
-- `functions/api/auth/**`, `functions/api/submissions/**` (except curator copilot above)
+# 完成后推送，在 GitHub 创建 PR → develop
+git push origin feature/your-feature-name
+```
 
-### Sales lane owns
-- `app/src/screens/sales.jsx`
-- `app/src/styles.css` — sales/catalog/rolepack blocks
-- `app/src/i18n.js` — `s9_*`, `s10_*`, `s11_*`, `gen_*` keys
-- `functions/api/catalog/**`
+### Commit 信息格式
 
-### Shared — touch carefully, commit immediately, tell the other lanes to rebase
-- `app/src/App.jsx`
-- `app/src/chrome.jsx` (BrandMark, PlatformHeader, AppHeader, CuratorHeader, ProcessStepper, getPlatformSteps, SCREENS)
-- `app/src/styles.css` — design tokens at the top (`:root`, theme blocks, `--plat-*`, density/roundness/warmth, `.app-header`, `.btn*`, `.proc-stepper`, `.screen-picker`, `.bubble`, generic statuses)
-- `app/src/auth.jsx`, `app/src/api.js`, `app/src/main.jsx`, `app/src/data.js`, `app/src/tweaks.jsx`
-- `app/index.html`
-- `functions/api/_middleware.js`, `_helpers.js`, `_fields-template.js`, `health.js`
-- `schema.sql`, `seed.sql`, `seed-demo.sql`, `wrangler.toml`, `wrangler.uat.toml`, `package.json`, `vite.config.js`, `scripts/**`
+```
+feat: 新增功能
+fix: 修复 bug
+refactor: 重构（不改变行为）
+style: 样式调整
+docs: 文档更新
+chore: 构建/配置变更
+```
 
-When you must edit a shared file:
-1. Make the change minimal and additive where possible.
-2. Commit it as its own commit (not bundled with lane-specific work).
-3. Push, and tell the user "I touched <file> for X; the other lane should `git fetch && git rebase origin/main`."
+## 技术栈
 
-## i18n keys are namespaced — keep it that way
+### 现状（Cloudflare 架构）
+- **前端** — React 18 + Vite，`app/` 目录
+- **后端** — Cloudflare Pages Functions，`functions/` 目录
+- **数据库** — Cloudflare D1（SQLite），schema 见 `schema.sql`
+- **文件存储** — Cloudflare R2
+- **AI** — DashScope（阿里云）Qwen 模型
 
-Keys for each lane stay in their numbered range (`s1_…s5` supplier, `s6_…s8` curator, `s9_…s11` sales). If you need a genuinely shared string, prefix with the surface (e.g., `nav_*`, `copilot_*`) and mention it in your commit message so other lanes notice.
+### 迁移目标（进行中）
+- **后端** → 独立 Node.js 服务（`backend/` 目录，待建）
+- **数据库** → PostgreSQL（Supabase 或 Neon）
+- **前端** → 不变，更新 API 地址指向新后端
 
-## CSS is co-located but section-isolated
+## 本地开发
 
-`app/src/styles.css` is one file, partitioned by section comments. Each lane edits *only* inside its own section. Do not refactor design tokens (`:root` block) without flagging — those changes affect every page.
+### 前端（仅 UI，使用 mock 数据）
 
-## Auth + API notes
+```bash
+cd app
+npm install
+npm run dev
+# → http://localhost:5173
+```
 
-- Live `/api/auth/login` currently returns HTTP 500 for the seeded `curator@demo` and `grace@rolemaster.io` accounts. Fresh `/api/auth/register` → login round-trips work fine. Treat this as a known prod bug; don't try to "fix" it from a UI lane.
-- For prototypes that need to render without sign-in, use a `?preview=1` URL flag handled in `App.jsx`'s landing component (already wired for `/curator`). Add an equivalent for your portal if you need one — additive only, default behavior unchanged.
+### 完整本地环境（需要 Cloudflare 账号）
 
-## Demo data fallback
+```bash
+# 根目录安装依赖
+npm install
 
-If a screen depends on `subs.list()`, `catalog.list()`, etc., wrap the call so it falls back to static demo data from `app/src/data.js` on error. The prototype must keep rendering even when the API is unreachable.
+# 创建本地环境变量
+echo 'JWT_SECRET="local-dev-only"' > .dev.vars
 
-## Tweaks panel must keep working
+# 初始化本地数据库
+npx wrangler d1 execute rolemaster-db --local --file=schema.sql
+npx wrangler d1 execute rolemaster-db --local --file=seed.sql
 
-Every screen must respect `density-*`, `round-*`, `warm-*` body classes and the `--plat-*` color variables. Don't hardcode colors that the Tweaks panel is supposed to drive.
+# 构建前端（wrangler 需要 dist/）
+cd app && npm run build && cd ..
 
-## Don't
+# 同时启动前端 + 后端
+npm run dev
+```
 
-- Don't add comments that just narrate code or mention the current task ("// added for the curator redesign"). One-line *why* comments only when non-obvious.
-- Don't commit `.dev.vars`, `.wrangler/`, `dist/`, or `node_modules/`.
-- Don't run destructive git commands (`reset --hard`, `push --force`, branch deletes) without explicit user instruction.
-- Don't run remote D1 writes (`wrangler d1 execute --remote`) from a UI lane. Schema/seed changes belong in a coordinated commit reviewed by the user.
-- Don't deploy to `--branch=main` from inside a feature lane. Ever.
+## 环境变量
 
-## Quick checklist before you finish a turn
+| 变量 | 说明 | 必填 |
+|---|---|---|
+| `JWT_SECRET` | JWT 签名密钥，随机字符串 | 是 |
+| `QWEN_API_KEY` | DashScope API Key | AI 功能需要 |
+| `QWEN_MODEL` | 模型名称，默认 `qwen-plus` | 否 |
+| `QWEN_BASE_URL` | API 地址，默认国际版 | 否 |
 
-- [ ] Changes scoped to your lane's owned files (or a justified shared-file commit).
-- [ ] Build passes (`npm run build` from `app/`).
-- [ ] If you deployed: shared the preview URL.
-- [ ] If you touched a shared file: said so explicitly in the chat so the user can relay it.
+本地开发放在 `.dev.vars`（已在 `.gitignore` 中，不提交）。
+
+## 目录结构
+
+```
+rolemaster/
+├── app/               前端（React + Vite）
+├── functions/         后端（Cloudflare Pages Functions，待迁移）
+├── backend/           新后端（Node.js，待建立）
+├── scripts/           工具脚本
+├── docs/              产品文档
+├── schema.sql         数据库 schema（D1/SQLite 版本）
+├── seed.sql           测试数据
+├── wrangler.toml      Cloudflare 配置
+└── CLAUDE.md          本文件
+```
+
+## 禁止事项
+
+- 不直接向 `main` 提交代码
+- 不提交 `.dev.vars`、`.wrangler/`、`dist/`、`node_modules/`
+- 不在未经测试的情况下部署到生产
+- 不运行 `wrangler d1 execute --remote` 修改生产数据库（需要明确确认）
