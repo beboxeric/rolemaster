@@ -342,6 +342,10 @@ model SupplierCompanyInfo {
   companyTeamEn    String?  @map("company_team_en")
   companyClientsZh String?  @map("company_clients_zh")
   companyClientsEn String?  @map("company_clients_en")
+  website          String?  @map("website")
+  contactName      String?  @map("contact_name")
+  contactPhone     String?  @map("contact_phone")
+  contactEmail     String?  @map("contact_email")
   updatedAt        DateTime @default(now()) @updatedAt @map("updated_at")
 
   supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)

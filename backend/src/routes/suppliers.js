@@ -11,37 +11,59 @@ import { shortId } from '../lib/id.js';
 const router = Router();
 router.use(requireSupplier);
 
+const SCOPED_FIELDS = ['company_name', 'company_hq', 'company_team', 'company_founded', 'company_clients'];
+const SINGLE_FIELDS = ['website', 'contact_name', 'contact_phone', 'contact_email'];
+
+function serializeCompanyInfo(row) {
+  const out = {};
+  for (const fid of SCOPED_FIELDS) {
+    const zhKey = fid.replace(/_([a-z])/g, (_, c) => c.toUpperCase()) + 'Zh';
+    const enKey = fid.replace(/_([a-z])/g, (_, c) => c.toUpperCase()) + 'En';
+    out[fid] = { zh: row?.[zhKey] || '', en: row?.[enKey] || '' };
+  }
+  out.website = row?.website || '';
+  out.contact_name = row?.contactName || '';
+  out.contact_phone = row?.contactPhone || '';
+  out.contact_email = row?.contactEmail || '';
+  return out;
+}
+
 // GET /api/suppliers/me/company-info
 router.get('/me/company-info', async (req, res, next) => {
   try {
     const info = await prisma.supplierCompanyInfo.findUnique({
       where: { supplierId: req.user.supplierId },
     });
-    res.json(info ?? {});
+    res.json({ company: serializeCompanyInfo(info) });
   } catch (err) { next(err); }
 });
 
 // PATCH /api/suppliers/me/company-info
 router.patch('/me/company-info', async (req, res, next) => {
   try {
-    const fields = [
-      'companyNameZh', 'companyNameEn',
-      'companyHqZh', 'companyHqEn',
-      'companyFoundedZh', 'companyFoundedEn',
-      'companyTeamZh', 'companyTeamEn',
-      'companyClientsZh', 'companyClientsEn',
-    ];
+    const updates = req.body.updates || {};
     const data = {};
-    for (const f of fields) {
-      if (req.body[f] !== undefined) data[f] = req.body[f];
+
+    for (const fid of SCOPED_FIELDS) {
+      if (!(fid in updates)) continue;
+      const v = updates[fid];
+      const zh = (typeof v === 'object' ? v.zh : v) || '';
+      const en = (typeof v === 'object' ? v.en : v) || '';
+      const base = fid.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+      data[base + 'Zh'] = zh;
+      data[base + 'En'] = en;
     }
+    if ('website' in updates) data.website = updates.website || '';
+    if ('contact_name' in updates) data.contactName = updates.contact_name || '';
+    if ('contact_phone' in updates) data.contactPhone = updates.contact_phone || '';
+    if ('contact_email' in updates) data.contactEmail = updates.contact_email || '';
 
     await prisma.supplierCompanyInfo.upsert({
       where: { supplierId: req.user.supplierId },
       update: data,
       create: { supplierId: req.user.supplierId, ...data },
     });
-    res.json({ ok: true });
+    res.json({ ok: true, updated: Object.keys(data).length });
   } catch (err) { next(err); }
 });
 
