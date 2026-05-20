@@ -154,13 +154,15 @@ model IntakeRolepack {
   companySizeJson  Json     @default("[]") @map("company_size_json")
   departmentJson   Json     @default("{}") @map("department_json")
   questionnaireJson Json?   @map("questionnaire_json")
-  generatedJson    Json?    @map("generated_json")  // AI-generated fields
-  position         Int      @default(0)
+  generatedJson      Json?    @map("generated_json")
+  materialsDraftJson Json?    @map("materials_draft_json")
+  position           Int      @default(0)
   status           String   @default("draft")  // draft | published
   updatedAt        DateTime @default(now()) @updatedAt @map("updated_at")
 
   intake       Intake               @relation(fields: [intakeId], references: [id], onDelete: Cascade)
   capabilities RolepackCapability[]
+  chatMessages ChatMessage[]
 
   @@map("intake_rolepacks")
 }
@@ -215,14 +217,16 @@ model AuditLog {
 }
 
 model ChatMessage {
-  id       Int      @id @default(autoincrement())
-  intakeId String   @map("intake_id")
-  role     String
-  content  String
-  meta     Json?
-  createdAt DateTime @default(now()) @map("created_at")
+  id         Int      @id @default(autoincrement())
+  intakeId   String?  @map("intake_id")
+  rolepackId String?  @map("rolepack_id")
+  role       String
+  content    String
+  meta       Json?
+  createdAt  DateTime @default(now()) @map("created_at")
 
-  intake Intake @relation(fields: [intakeId], references: [id], onDelete: Cascade)
+  intake   Intake?        @relation(fields: [intakeId], references: [id], onDelete: Cascade)
+  rolepack IntakeRolepack? @relation(fields: [rolepackId], references: [id], onDelete: Cascade)
 
   @@map("chat_messages")
 }

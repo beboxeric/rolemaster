@@ -6,6 +6,13 @@ import prisma from '../lib/prisma.js';
 import { requireSupplier, requireAuth } from '../middleware/auth.js';
 import { shortId } from '../lib/id.js';
 import { uploadFile, deleteFile } from '../lib/storage.js';
+import { callQwen, parseStrictJson } from '../lib/ai.js';
+import { buildMaterialsBlocks } from '../lib/ai-intake.js';
+import { EXTRACT_CAPABILITIES_SYSTEM_PROMPT } from '../lib/prompts/extract-capabilities.js';
+import { MATCH_ROLES_SYSTEM_PROMPT } from '../lib/prompts/match-roles.js';
+import { ROLE_PREFILL_SYSTEM_PROMPT } from '../lib/prompts/role-prefill.js';
+import { ROLE_FINALIZE_SYSTEM_PROMPT } from '../lib/prompts/role-finalize.js';
+import { COPILOT_SYSTEM_PROMPT } from '../lib/prompts/copilot.js';
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -519,6 +526,379 @@ router.delete('/:id/files/:fid', requireSupplier, async (req, res, next) => {
     await deleteFile(file.storageKey).catch(() => {});
     await prisma.intakeFile.delete({ where: { id: file.id } });
     res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// ── AI: extract capabilities ──────────────────────────────────────────────────
+
+router.post('/:id/extract-capabilities', requireSupplier, async (req, res, next) => {
+  try {
+    const intake = await getOwnIntake(req.params.id, req.user.supplierId);
+    if (!intake) return res.status(404).json({ error: 'not_found' });
+    if (!process.env.QWEN_API_KEY && !process.env.DASHSCOPE_API_KEY) return res.json({ ok: false, reason: 'no_api_key' });
+
+    const { blocks, hasContent, hasReadableText, fileCount } = await buildMaterialsBlocks(intake.id, intake);
+    if (!hasContent) return res.json({ ok: false, reason: 'no_materials' });
+    if (!hasReadableText) {
+      await prisma.intake.update({ where: { id: intake.id }, data: { status: 'draft' } });
+      return res.json({
+        ok: false, reason: 'pdf_text_extraction_unavailable',
+        message_zh: '上传的 PDF/文档暂时无法自动提取内容。请在「产品介绍」文本框里简要描述这款产品做什么，然后再点继续。',
+        message_en: 'PDF text extraction unavailable. Please describe the product in the "Product description" box, then click Continue again.',
+      });
+    }
+
+    await prisma.intake.update({ where: { id: intake.id }, data: { status: 'analyzing_capabilities' } });
+
+    async function runAi(extraNudge = '') {
+      return callQwen({
+        surface: 'extract-capabilities', submissionId: intake.id,
+        system: EXTRACT_CAPABILITIES_SYSTEM_PROMPT + (extraNudge ? '\n\n' + extraNudge : ''),
+        messages: [{ role: 'user', content: [
+          { type: 'text', text: 'Identify the atomic capabilities. Output strict JSON.' },
+          ...blocks,
+        ]}],
+        maxTokens: 7000, timeoutMs: 110_000,
+      });
+    }
+
+    let ai = await runAi();
+    if (!ai.ok) {
+      await prisma.intake.update({ where: { id: intake.id }, data: { status: 'draft' } });
+      return res.json({ ok: false, reason: ai.reason || 'error', error: ai.error });
+    }
+
+    let parsed = parseStrictJson(ai.text);
+    if (!parsed?.capabilities?.length) {
+      ai = await runAi('CRITICAL: Output ONLY a single JSON object. No prose, no markdown fences. Start with `{` and end with `}`. Keep `description` to ONE sentence per language.');
+      if (ai.ok) parsed = parseStrictJson(ai.text);
+    }
+    if (!parsed?.capabilities?.length) {
+      await prisma.intake.update({ where: { id: intake.id }, data: { status: 'draft' } });
+      return res.json({ ok: false, reason: 'parse_failed', message_zh: 'AI 返回内容无法解析，请简化产品介绍后重试。', message_en: 'Could not parse AI response. Try shortening the product description.' });
+    }
+
+    // Wipe previous AI caps, keep supplier-added ones.
+    await prisma.capability.deleteMany({ where: { intakeId: intake.id, source: 'ai' } });
+
+    const existing = await prisma.capability.findMany({ where: { intakeId: intake.id }, select: { rcLabel: true, position: true } });
+    const usedNums = new Set(existing.map(r => { const m = r.rcLabel?.match(/^RC-(\d+)$/); return m ? parseInt(m[1]) : null; }).filter(Boolean));
+    let nextNum = 1;
+    const nextLabel = () => { while (usedNums.has(nextNum)) nextNum++; const l = `RC-${String(nextNum).padStart(2, '0')}`; usedNums.add(nextNum++); return l; };
+
+    const trimName = (s, lang) => {
+      const t = String(s || '').trim().replace(/^RC-\d+[\s—:.]*/, '').trim();
+      return lang === 'zh' ? t.split(/[—:、,,]/, 1)[0].trim().slice(0, 18) : t.split(/[—:,;]/, 1)[0].trim().split(/\s+/).slice(0, 8).join(' ');
+    };
+    const detectLang = (s) => { const t = String(s || ''); return (t.match(/[一-鿿]/g)||[]).length >= (t.match(/[A-Za-z]/g)||[]).length ? 'zh' : 'en'; };
+
+    const srcLang = parsed.language === 'en' || parsed.language === 'zh' ? parsed.language : detectLang(parsed.capabilities[0]?.name);
+    const tgtLang = srcLang === 'zh' ? 'en' : 'zh';
+
+    // Batch translate.
+    async function translateBatch(items, from, to) {
+      if (!items.length) return items.map(() => ({ name: '', description: '' }));
+      const list = items.map((c, i) => `${i + 1}. NAME: ${c.name}\n   DESC: ${c.description || ''}`).join('\n');
+      const direction = from === 'zh' ? 'Chinese to English' : 'English to Chinese';
+      const ai2 = await callQwen({
+        surface: 'extract-capabilities-translate', submissionId: intake.id,
+        system: `You are a professional bilingual translator. Translate NAME and DESC from ${direction}. Output strict JSON: { "items": [ { "name": "...", "desc": "..." } ] }. Constraints: NAME zh ≤12 chars, en ≤6 words. DESC 1-2 sentences. No prose, no fences.`,
+        messages: [{ role: 'user', content: `Translate ${items.length} capability rows from ${direction}:\n\n${list}` }],
+        maxTokens: 3000, timeoutMs: 60_000,
+      });
+      if (!ai2.ok) return items.map(() => ({ name: '', description: '' }));
+      const out = parseStrictJson(ai2.text);
+      const arr = Array.isArray(out?.items) ? out.items : [];
+      return items.map((_, i) => ({ name: arr[i]?.name || '', description: arr[i]?.desc || arr[i]?.description || '' }));
+    }
+
+    const translated = await translateBatch(parsed.capabilities, srcLang, tgtLang);
+    const startPos = existing.length;
+
+    await Promise.all(parsed.capabilities.map((c, i) => {
+      const tx = translated[i] || { name: '', description: '' };
+      const nameSrc = trimName(c.name, srcLang), nameTgt = trimName(tx.name, tgtLang);
+      const sqLang = detectLang(c.source_quote); const sqText = c.source_quote || '';
+      return prisma.capability.create({ data: {
+        id: shortId('CAP-', 8), intakeId: intake.id, rcLabel: nextLabel(),
+        nameZh: srcLang === 'zh' ? nameSrc : nameTgt,
+        nameEn: srcLang === 'en' ? nameSrc : nameTgt,
+        descriptionZh: srcLang === 'zh' ? (c.description || '') : (tx.description || ''),
+        descriptionEn: srcLang === 'en' ? (c.description || '') : (tx.description || ''),
+        sourceQuote: sqLang === 'zh' ? sqText : '',
+        position: startPos + i, source: 'ai', confirmed: false,
+      }});
+    }));
+
+    await prisma.intake.update({ where: { id: intake.id }, data: { status: 'capabilities_ready' } });
+    res.json({ ok: true, count: parsed.capabilities.length, file_count: fileCount });
+  } catch (err) { next(err); }
+});
+
+// ── AI: match roles ───────────────────────────────────────────────────────────
+
+router.post('/:id/match-roles', requireSupplier, async (req, res, next) => {
+  try {
+    const intake = await getOwnIntake(req.params.id, req.user.supplierId);
+    if (!intake) return res.status(404).json({ error: 'not_found' });
+    if (!process.env.QWEN_API_KEY && !process.env.DASHSCOPE_API_KEY) return res.json({ ok: false, reason: 'no_api_key' });
+
+    const caps = await prisma.capability.findMany({ where: { intakeId: intake.id }, orderBy: { position: 'asc' } });
+    if (!caps.length) return res.json({ ok: false, reason: 'no_capabilities' });
+
+    const [industries, sizes, depts] = await Promise.all([
+      prisma.taxonomyIndustry.findMany({ where: { parentId: null }, orderBy: { displayOrder: 'asc' } }),
+      Promise.resolve([]),
+      Promise.resolve([]),
+    ]);
+
+    const validIndustryIds = new Set(industries.map(r => r.id));
+    const taxonomyForPrompt = {
+      industries: industries.map(r => ({ id: r.id, zh: r.nameZh, en: r.nameEn })),
+      company_sizes: sizes.map(r => ({ id: r.id, zh: r.nameZh, en: r.nameEn })),
+      departments: depts.map(r => ({ id: r.id, zh: r.nameZh, en: r.nameEn })),
+    };
+
+    const capList = caps.map(c => ({ rc_label: c.rcLabel, name: { zh: c.nameZh, en: c.nameEn }, description: { zh: c.descriptionZh, en: c.descriptionEn } }));
+    const { blocks } = await buildMaterialsBlocks(intake.id, intake);
+
+    await prisma.intake.update({ where: { id: intake.id }, data: { status: 'matching_roles' } });
+
+    const ai = await callQwen({
+      surface: 'match-roles', submissionId: intake.id,
+      system: MATCH_ROLES_SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: [
+        { type: 'text', text: 'Valid taxonomy (use ONLY these IDs):\n' + JSON.stringify(taxonomyForPrompt, null, 2) + '\n\nCapabilities:\n' + JSON.stringify(capList, null, 2) + '\n\nMaterials follow:' },
+        ...blocks,
+      ]}],
+      maxTokens: 3000, timeoutMs: 70_000,
+    });
+    if (!ai.ok) return res.json({ ok: false, reason: ai.reason || 'error', error: ai.error });
+
+    const parsed = parseStrictJson(ai.text);
+    if (!parsed?.roles?.length) return res.json({ ok: false, reason: 'parse_failed' });
+
+    for (const r of parsed.roles) {
+      r.industry = (r.industry || []).filter(x => validIndustryIds.has(x));
+    }
+
+    // Replace all rolepacks for this intake.
+    await prisma.intakeRolepack.deleteMany({ where: { intakeId: intake.id } });
+    const capByLabel = Object.fromEntries(caps.map(c => [c.rcLabel, c.id]));
+
+    for (let i = 0; i < parsed.roles.length; i++) {
+      const r = parsed.roles[i];
+      const rpId = shortId('RP-', 8);
+      const rpLabel = `RP-${String(i + 1).padStart(2, '0')}`;
+      await prisma.intakeRolepack.create({ data: {
+        id: rpId, intakeId: intake.id, rpLabel,
+        nameZh: r.name?.zh || '', nameEn: r.name?.en || '',
+        industryJson: r.industry || [], companySizeJson: r.company_size || [],
+        departmentJson: r.department || { zh: '', en: '' }, position: i,
+      }});
+      const capIds = (r.capability_ids || []).map(lbl => capByLabel[lbl]).filter(Boolean);
+      if (capIds.length) {
+        await prisma.rolepackCapability.createMany({
+          data: capIds.map((capId, j) => ({ rolepackId: rpId, capabilityId: capId, position: j })),
+          skipDuplicates: true,
+        });
+      }
+    }
+
+    await prisma.intake.update({ where: { id: intake.id }, data: { status: 'roles_ready' } });
+    res.json({ ok: true, count: parsed.roles.length });
+  } catch (err) { next(err); }
+});
+
+// ── Finalize (submit to curator queue) ───────────────────────────────────────
+
+router.post('/:id/finalize', requireSupplier, async (req, res, next) => {
+  try {
+    const intake = await getOwnIntake(req.params.id, req.user.supplierId);
+    if (!intake) return res.status(404).json({ error: 'not_found' });
+    const rolepacks = await prisma.intakeRolepack.findMany({ where: { intakeId: intake.id }, orderBy: { position: 'asc' } });
+    if (!rolepacks.length) return res.json({ ok: false, reason: 'no_rolepacks' });
+
+    await prisma.intake.update({ where: { id: intake.id }, data: { status: 'submitted', finalizedAt: new Date() } });
+    await prisma.intakeRolepack.updateMany({ where: { intakeId: intake.id }, data: { status: 'submitted' } });
+
+    res.json({ ok: true, count: rolepacks.length, rolepacks: rolepacks.map(r => ({ id: r.id, rp_label: r.rpLabel })) });
+  } catch (err) { next(err); }
+});
+
+// ── AI: prefill rolepack questionnaire ───────────────────────────────────────
+
+router.post('/:id/rolepacks/:rpId/prefill', requireSupplier, async (req, res, next) => {
+  try {
+    const intake = await getOwnIntake(req.params.id, req.user.supplierId);
+    if (!intake) return res.status(404).json({ error: 'not_found' });
+    const rp = await prisma.intakeRolepack.findFirst({ where: { id: req.params.rpId, intakeId: intake.id } });
+    if (!rp) return res.status(404).json({ error: 'not_found' });
+
+    const force = req.query.force === '1';
+    if (rp.questionnaireJson && !force) return res.json({ ok: true, skipped: true, questionnaire: rp.questionnaireJson });
+
+    const caps = await prisma.rolepackCapability.findMany({
+      where: { rolepackId: rp.id },
+      include: { capability: true },
+      orderBy: { position: 'asc' },
+    });
+    const { blocks } = await buildMaterialsBlocks(intake.id, intake);
+
+    const roleBrief = {
+      rp_label: rp.rpLabel, name: { zh: rp.nameZh, en: rp.nameEn },
+      industry: rp.industryJson, company_size: rp.companySizeJson, department: rp.departmentJson,
+      capabilities: caps.map(rc => ({ rc_label: rc.capability.rcLabel, name: { zh: rc.capability.nameZh, en: rc.capability.nameEn }, description: { zh: rc.capability.descriptionZh, en: rc.capability.descriptionEn } })),
+    };
+
+    const ai = await callQwen({
+      surface: 'role-prefill', submissionId: intake.id, productId: rp.id,
+      system: ROLE_PREFILL_SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: [
+        { type: 'text', text: 'Role brief:\n' + JSON.stringify(roleBrief, null, 2) + '\n\n---\n\nMaterials follow:' },
+        ...blocks,
+      ]}],
+      maxTokens: 4000, timeoutMs: 70_000,
+    });
+    if (!ai.ok) return res.json({ ok: false, reason: ai.reason || 'error' });
+
+    const parsed = parseStrictJson(ai.text);
+    if (!parsed) return res.json({ ok: false, reason: 'parse_failed' });
+
+    await prisma.intakeRolepack.update({ where: { id: rp.id }, data: { questionnaireJson: parsed } });
+    res.json({ ok: true, questionnaire: parsed });
+  } catch (err) { next(err); }
+});
+
+// ── AI: generate rolepack sales materials ────────────────────────────────────
+
+router.post('/:id/rolepacks/:rpId/generate', requireSupplier, async (req, res, next) => {
+  try {
+    const intake = await getOwnIntake(req.params.id, req.user.supplierId);
+    if (!intake) return res.status(404).json({ error: 'not_found' });
+    const rp = await prisma.intakeRolepack.findFirst({ where: { id: req.params.rpId, intakeId: intake.id } });
+    if (!rp) return res.status(404).json({ error: 'not_found' });
+
+    const force = req.query.force === '1';
+    if (rp.generatedJson && !force) return res.json({ ok: true, skipped: 'already_generated' });
+
+    const caps = await prisma.rolepackCapability.findMany({
+      where: { rolepackId: rp.id }, include: { capability: true }, orderBy: { position: 'asc' },
+    });
+
+    const brief = {
+      rp_label: rp.rpLabel, name: { zh: rp.nameZh, en: rp.nameEn },
+      industry: rp.industryJson, company_size: rp.companySizeJson, department: rp.departmentJson,
+      capabilities: caps.map(rc => ({ rc_label: rc.capability.rcLabel, name: { zh: rc.capability.nameZh, en: rc.capability.nameEn }, description: { zh: rc.capability.descriptionZh, en: rc.capability.descriptionEn } })),
+      questionnaire: rp.questionnaireJson || {},
+      service_pricing: intake.servicePricingJson || {},
+    };
+
+    const ai = await callQwen({
+      surface: 'role-finalize', submissionId: intake.id, productId: rp.id,
+      system: ROLE_FINALIZE_SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: 'Role brief:\n' + JSON.stringify(brief, null, 2) }],
+      maxTokens: 8000, timeoutMs: 80_000,
+    });
+    if (!ai.ok) return res.status(500).json({ ok: false, reason: ai.reason || 'error', error: ai.error });
+
+    const parsed = parseStrictJson(ai.text);
+    if (!parsed?.generated || !parsed?.materials) return res.status(500).json({ ok: false, reason: 'parse_failed' });
+
+    await prisma.intakeRolepack.update({ where: { id: rp.id }, data: { generatedJson: parsed.generated, materialsDraftJson: parsed.materials } });
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// ── AI: copilot ───────────────────────────────────────────────────────────────
+
+const COPILOT_FIELD_LABELS = {
+  'profile.daily_activities':    { zh: '日常工作内容', en: 'Daily activities' },
+  'profile.decision_maker':      { zh: '决策者', en: 'Decision maker' },
+  'profile.decision_priorities': { zh: '决策者关注点', en: 'Decision priorities' },
+  'pain.main_pain':              { zh: '主要痛点', en: 'Main pain' },
+  'pain.current_workflow':       { zh: '现有处理方式', en: 'Current workflow' },
+  'pain.quantified_value':       { zh: '量化效果', en: 'Quantified value' },
+  'how_it_helps.workflow_integration': { zh: '能力如何嵌入', en: 'Workflow integration' },
+  'how_it_helps.outcomes':       { zh: '上线后改变', en: 'Outcomes' },
+  'how_it_helps.case_study':     { zh: '客户案例', en: 'Case study' },
+  'deployment.deployment_mode':  { zh: '部署方式', en: 'Deployment mode' },
+  'deployment.api_endpoint':     { zh: 'API 接入', en: 'API endpoint' },
+};
+
+router.post('/:id/rolepacks/:rpId/copilot', requireAuth, async (req, res, next) => {
+  try {
+    if (req.user.role !== 'supplier' && req.user.role !== 'curator') return res.status(403).json({ error: 'forbidden' });
+    const intake = await prisma.intake.findUnique({ where: { id: req.params.id } });
+    if (!intake) return res.status(404).json({ error: 'not_found' });
+    if (req.user.role === 'supplier' && intake.supplierId !== req.user.supplierId) return res.status(403).json({ error: 'forbidden' });
+
+    const rp = await prisma.intakeRolepack.findFirst({ where: { id: req.params.rpId, intakeId: req.params.id } });
+    if (!rp) return res.status(404).json({ error: 'not_found' });
+
+    const message = (req.body.message || '').trim();
+    const dryrun = req.body.dryrun === true;
+    if (!message) return res.status(400).json({ error: 'empty_message' });
+
+    const questionnaire = rp.questionnaireJson || {};
+    const stateLines = Object.entries(COPILOT_FIELD_LABELS).map(([dotKey, label]) => {
+      const [section, field] = dotKey.split('.');
+      const v = questionnaire[section]?.[field];
+      const display = v ? (Array.isArray(v.value_zh) ? v.value_zh.join(' · ') : (v.value_zh || v.value_en || '')) : '';
+      return `  ${dotKey} [${label.zh} / ${label.en}]: ${display ? `filled = "${String(display).slice(0, 60)}"` : 'empty'}`;
+    });
+
+    const userPrompt = `Role: ${rp.rpLabel} ${rp.nameZh}/${rp.nameEn}\n\nCurrent questionnaire state:\n\n${stateLines.join('\n')}\n\nLatest from supplier:\n\n${message}`;
+
+    const ai = await callQwen({
+      surface: 'copilot', submissionId: req.params.id, productId: rp.id,
+      system: COPILOT_SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: userPrompt }],
+      maxTokens: 1500, timeoutMs: 30_000,
+    });
+    if (!ai.ok) return res.json({ ok: false, reason: ai.reason, reply: 'AI temporarily unavailable.', updates: [] });
+
+    const parsed = parseStrictJson(ai.text);
+    if (!parsed) return res.json({ ok: false, reason: 'parse_failed', reply: '我理解你的输入了。', updates: [] });
+
+    const applied = [];
+    for (const upd of (parsed.fields_updated || [])) {
+      const [section, field] = (upd.field_id || '').split('.');
+      if (!section || !field || !COPILOT_FIELD_LABELS[upd.field_id]) continue;
+      const display = Array.isArray(upd.value_zh) ? upd.value_zh.join(' · ') : (upd.value_zh || upd.value_en || '');
+      if (!display) continue;
+      if (!questionnaire[section]) questionnaire[section] = {};
+      questionnaire[section][field] = { value_zh: upd.value_zh, value_en: upd.value_en, confidence: upd.confidence ?? null, source_quote: '', _state: upd.vague_followup_needed ? 'copilot_weak' : 'copilot_filled' };
+      applied.push({ id: upd.field_id, label: COPILOT_FIELD_LABELS[upd.field_id], value: { zh: upd.value_zh, en: upd.value_en }, status: upd.vague_followup_needed ? 'weak' : 'filled', vague: upd.vague_followup_needed });
+    }
+
+    if (applied.length && !dryrun) {
+      await prisma.intakeRolepack.update({ where: { id: rp.id }, data: { questionnaireJson: questionnaire } });
+    }
+    if (!dryrun) {
+      await prisma.chatMessage.createMany({ data: [
+        { rolepackId: rp.id, role: 'user', content: message },
+        { rolepackId: rp.id, role: 'bot', content: parsed.reply || '', meta: { updates: applied.map(a => ({ id: a.id })) } },
+      ]}).catch(() => {});
+    }
+
+    res.json({ ok: true, reply: parsed.reply, reply_lang: parsed.reply_lang, updates: applied, dryrun });
+  } catch (err) { next(err); }
+});
+
+router.get('/:id/rolepacks/:rpId/copilot', requireAuth, async (req, res, next) => {
+  try {
+    if (req.user.role !== 'supplier' && req.user.role !== 'curator') return res.status(403).json({ error: 'forbidden' });
+    const intake = await prisma.intake.findUnique({ where: { id: req.params.id } });
+    if (!intake) return res.status(404).json({ error: 'not_found' });
+    if (req.user.role === 'supplier' && intake.supplierId !== req.user.supplierId) return res.status(403).json({ error: 'forbidden' });
+
+    const messages = await prisma.chatMessage.findMany({
+      where: { rolepackId: req.params.rpId },
+      orderBy: { createdAt: 'asc' },
+      take: 50,
+    });
+    res.json({ items: messages.map(m => ({ role: m.role, content: m.content, created_at: m.createdAt })) });
   } catch (err) { next(err); }
 });
 
